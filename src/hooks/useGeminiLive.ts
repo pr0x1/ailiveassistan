@@ -35,6 +35,7 @@ export const useGeminiLive = (): UseGeminiLiveReturn => {
   const ai = useRef<GoogleGenAI | null>(null);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const audioStreamRef = useRef<MediaStream | null>(null);
+  const isWebSocketOpen = useRef<boolean>(false);
 
   /**
    * Initialize Google Generative AI client
@@ -88,13 +89,26 @@ export const useGeminiLive = (): UseGeminiLiveReturn => {
         if (event.data.size > 0 && liveSession) {
           console.log('[Gemini Live] Sending audio chunk:', event.data.size, 'bytes');
           try {
-            // Use official API: sendRealtimeInput with media parameter
+            // Check if session is still connected before sending
+            // Note: Gemini Live session doesn't have readyState property like WebSocket
+            // Instead, we'll use try-catch and check if session is still valid
             liveSession.sendRealtimeInput({
               media: event.data  // Direct blob - API handles conversion
             });
             console.log('[Gemini Live] Audio chunk sent successfully');
           } catch (sendError) {
             console.error('[Gemini Live] Failed to send audio chunk:', sendError);
+            
+            // Check if error indicates connection is closed
+            const errorMessage = (sendError as Error)?.message || String(sendError) || '';
+            if (errorMessage.includes('CLOSING') || errorMessage.includes('CLOSED') || 
+                errorMessage.includes('connection') || errorMessage.includes('WebSocket')) {
+              console.warn('[Gemini Live] Connection appears closed, stopping audio recording');
+              // Stop recording if connection appears to be closed
+              if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
+                mediaRecorderRef.current.stop();
+              }
+            }
           }
         }
       };
@@ -236,9 +250,6 @@ export const useGeminiLive = (): UseGeminiLiveReturn => {
       // Connect to real Gemini Live API with WebSocket audio streaming
       console.log('[Gemini Live] Connecting to Gemini Live API...');
       
-      // Store session reference to avoid context issues
-      let sessionRef: any = null;
-      
       const liveSession = await ai.current.live.connect({
         model: 'gemini-2.5-flash-native-audio-preview-09-2025',
         config: {
@@ -253,12 +264,9 @@ export const useGeminiLive = (): UseGeminiLiveReturn => {
         callbacks: {
           onopen: () => {
             console.log('[Gemini Live] WebSocket connection established');
-            console.log('[Gemini Live] Starting audio streaming...');
+            isWebSocketOpen.current = true;
             setIsConnected(true);
             setState('LISTENING');
-            
-            // Start audio streaming using stored session reference
-            startAudioStreaming(sessionRef);
           },
           onmessage: (e: any) => {
             console.log('[Gemini Live] Received message:', e);
@@ -267,6 +275,15 @@ export const useGeminiLive = (): UseGeminiLiveReturn => {
             if (e.serverContent) {
               console.log('[Gemini Live] Server content received');
               setState('SPEAKING');
+              
+              // Handle audio responses from Gemini
+              if (e.serverContent.audioChunks) {
+                console.log('[Gemini Live] Audio response received');
+                // TODO: Play audio response from Gemini
+                for (const chunk of e.serverContent.audioChunks) {
+                  console.log('[Gemini Live] Audio chunk:', chunk.data?.length, 'bytes');
+                }
+              }
               
               // Process text content if available
               if (e.serverContent.modelTurn?.parts) {
@@ -300,25 +317,39 @@ export const useGeminiLive = (): UseGeminiLiveReturn => {
           },
           onerror: (error: any) => {
             console.error('[Gemini Live] WebSocket error:', error);
+            isWebSocketOpen.current = false;
             setError({
               type: 'CONNECTION',
               message: 'Gemini Live connection error',
               details: error
             });
             setState('IDLE');
+            // Stop MediaRecorder when WebSocket has error
+            if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
+              console.log('[Gemini Live] Stopping MediaRecorder due to WebSocket error');
+              mediaRecorderRef.current.stop();
+            }
           },
-          onclose: (_event: any) => {
-            console.log('[Gemini Live] WebSocket connection closed');
+          onclose: (event: any) => {
+            console.log('[Gemini Live] WebSocket connection closed:', event?.reason || 'Unknown reason');
+            isWebSocketOpen.current = false;
             setIsConnected(false);
             setState('IDLE');
+            // Stop MediaRecorder immediately when WebSocket closes
+            if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
+              console.log('[Gemini Live] Stopping MediaRecorder due to WebSocket close');
+              mediaRecorderRef.current.stop();
+            }
           }
         }
       });
 
       console.log('[Gemini Live] Successfully connected to Gemini Live API');
-      // Store session reference for audio streaming
-      sessionRef = liveSession;
       setSession(liveSession);
+
+      // Start audio streaming AFTER connection (not in callbacks)
+      console.log('[Gemini Live] Starting audio streaming...');
+      await startAudioStreaming(liveSession);
 
     } catch (connectionError) {
       console.error('[Gemini Live] Failed to start conversation:', connectionError);
@@ -337,9 +368,20 @@ export const useGeminiLive = (): UseGeminiLiveReturn => {
    * End conversation
    */
   const endConversation = useCallback(() => {
-    // Stop audio streaming first
+    // 1. Signal audio stream end (official Gemini Live pattern)
+    if (session && isWebSocketOpen.current) {
+      try {
+        console.log('[Gemini Live] Signaling audio stream end...');
+        session.sendRealtimeInput({ audioStreamEnd: true });
+      } catch (signalError) {
+        console.warn('[Gemini Live] Failed to signal audio stream end:', signalError);
+      }
+    }
+    
+    // 2. Stop audio streaming
     stopAudioStreaming();
     
+    // 3. Close session
     if (session) {
       try {
         session.close();
@@ -349,8 +391,10 @@ export const useGeminiLive = (): UseGeminiLiveReturn => {
       }
     }
     
+    // 4. Reset state
     setSession(null);
     setIsConnected(false);
+    isWebSocketOpen.current = false;
     setState('IDLE');
     responseQueue.current = [];
   }, [session, setState, stopAudioStreaming]);

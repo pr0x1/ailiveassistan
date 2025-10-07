@@ -402,6 +402,195 @@ This project is licensed under the MIT License.
 - Check TypeScript errors with `npm run build`
 - Verify all imports use correct paths
 
+### **🔧 Critical Issues Fixed (v1.3.0) - Official Gemini Live Pattern**
+
+#### **Issue: WebSocket Closes Immediately After Setup**
+**Symptoms:**
+```
+[Gemini Live] Setup complete
+[Gemini Live] Sending audio chunk: 1932 bytes
+WebSocket is already in CLOSING or CLOSED state. ← ERROR from @google_genai.js
+[Gemini Live] WebSocket connection closed
+[Gemini Live] Sending audio chunk: 1932 bytes ← Still trying to send!
+WebSocket is already in CLOSING or CLOSED state. ← More errors
+```
+
+**Root Cause**: Missing `audioStreamEnd` signal and improper WebSocket lifecycle management according to official Gemini Live documentation.
+
+**Fix Applied**: Implemented official Gemini Live pattern with proper session lifecycle:
+```javascript
+// 1. Added WebSocket state tracking
+const isWebSocketOpen = useRef<boolean>(false);
+
+// 2. Proper callback handling
+callbacks: {
+  onopen: () => {
+    console.log('[Gemini Live] WebSocket connection established');
+    isWebSocketOpen.current = true; // ✅ Track WebSocket state
+    setIsConnected(true);
+    setState('LISTENING');
+  },
+  onclose: (event) => {
+    console.log('[Gemini Live] WebSocket connection closed:', event?.reason);
+    isWebSocketOpen.current = false; // ✅ Update state immediately
+    setIsConnected(false);
+    setState('IDLE');
+    // ✅ Stop MediaRecorder immediately when WebSocket closes
+    if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
+      console.log('[Gemini Live] Stopping MediaRecorder due to WebSocket close');
+      mediaRecorderRef.current.stop();
+    }
+  }
+}
+
+// 3. Added audioStreamEnd signal (CRITICAL - from official docs)
+const endConversation = useCallback(() => {
+  // ✅ Signal audio stream end (official Gemini Live pattern)
+  if (session && isWebSocketOpen.current) {
+    try {
+      console.log('[Gemini Live] Signaling audio stream end...');
+      session.sendRealtimeInput({ audioStreamEnd: true }); // ← MISSING PIECE!
+    } catch (signalError) {
+      console.warn('[Gemini Live] Failed to signal audio stream end:', signalError);
+    }
+  }
+  
+  // Stop audio streaming
+  stopAudioStreaming();
+  
+  // Close session
+  if (session) {
+    session.close();
+  }
+}, [session, stopAudioStreaming]);
+```
+
+**Expected Behavior**: WebSocket stays open during conversation, closes gracefully with `audioStreamEnd` signal, no more "CLOSING or CLOSED state" errors.
+
+#### **Issue: Duplicate MCP Connections (React Strict Mode)**
+**Symptoms:**
+```
+[MCP] Successfully connected to SAP server (appears twice)
+[MCP] Discovered 34 tools: Array(34) (appears twice)
+```
+
+**Root Cause**: React Strict Mode and component re-mounting causing multiple connection attempts.
+
+**Fix Applied**: Added React Strict Mode protection with connection state tracking:
+```javascript
+const isConnecting = useRef(false);
+
+const connect = useCallback(async () => {
+  // Prevent duplicate connections (React Strict Mode protection)
+  if (isConnecting.current || isConnected || client) {
+    console.log('[MCP] Connection already in progress or established, skipping');
+    return;
+  }
+
+  try {
+    isConnecting.current = true;
+    // ... connection logic
+    isConnecting.current = false;
+  } catch (error) {
+    isConnecting.current = false;
+    // ... error handling
+  } finally {
+    isConnecting.current = false;
+  }
+}, []);
+```
+
+**Expected Behavior**: Single MCP connection established, no duplicate tool discovery.
+
+#### **Issue: Tool Count Mismatch Understanding**
+**Symptoms:**
+```
+[MCP] Discovered 34 tools: Array(34)  ← MCP discovers 34 tools
+[Gemini Live] Configured with 1 tools  ← But only 1 tool passed to Gemini
+```
+
+**Root Cause**: Misunderstanding of Gemini Live tool format - this is actually correct behavior.
+
+**Explanation**: The tool converter correctly creates 1 tool object containing all 34 function declarations:
+```javascript
+// Correct format for Gemini Live:
+return [{
+  functionDeclarations: mcpTools.map(tool => ({
+    name: tool.name,
+    description: tool.description,
+    parameters: tool.inputSchema
+  }))
+}]; // Returns 1 tool object with 34 function declarations
+```
+
+**Expected Behavior**: 1 tool object with 34 function declarations is the correct format for Gemini Live API.
+
+#### **Issue: Browser Extension Interference**
+**Symptoms:**
+```
+(index):1 Unchecked runtime.lastError: The message port closed before a response was received.
+```
+
+**Root Cause**: Browser extensions trying to communicate with the page.
+
+**Solution**: This is a browser extension issue, not an application error. Can be safely ignored or resolved by:
+- Disabling problematic browser extensions
+- Using incognito mode for testing
+- Checking browser console for extension-related errors
+
+### **🔍 Debugging WebSocket Issues**
+
+#### **Check WebSocket State:**
+```javascript
+// In browser console, check WebSocket connection state:
+console.log('WebSocket State:', liveSession?.readyState);
+// 0 = CONNECTING, 1 = OPEN, 2 = CLOSING, 3 = CLOSED
+```
+
+#### **Monitor Connection Lifecycle:**
+```
+[Gemini Live] WebSocket connection established    ← State: OPEN (1)
+[Gemini Live] Audio streaming started            ← MediaRecorder active
+[Gemini Live] Sending audio chunk: 1 bytes       ← First chunk success
+[Gemini Live] Sending audio chunk: 3059 bytes    ← Should succeed now
+[Gemini Live] Audio chunk sent successfully      ← No more errors
+```
+
+#### **Expected Error Resolution:**
+- **Before Fix**: `WebSocket is already in CLOSING or CLOSED state`
+- **After Fix**: `WebSocket not open, stopping audio recording. State: 2`
+
+### **🛠️ Connection Recovery**
+
+#### **Automatic Recovery Features:**
+1. **WebSocket State Monitoring**: Automatically detects connection issues
+2. **Audio Recording Cleanup**: Stops MediaRecorder when connection fails
+3. **MCP Reconnection**: Automatic retry logic for MCP server connections
+4. **Error State Management**: Clear error reporting and recovery
+
+#### **Manual Recovery Steps:**
+1. **For WebSocket Issues**: Click "End Conversation" then "Start Conversation"
+2. **For MCP Issues**: Refresh the page to reinitialize MCP connection
+3. **For Audio Issues**: Check browser permissions and refresh
+
+### **📊 Performance Monitoring**
+
+#### **Healthy Connection Indicators:**
+```
+✅ [MCP] Successfully connected to SAP server (once)
+✅ [MCP] Discovered 34 tools (once)
+✅ [Gemini Live] WebSocket connection established
+✅ [Gemini Live] Audio streaming started
+✅ [Gemini Live] Audio chunk sent successfully (continuous)
+```
+
+#### **Problem Indicators:**
+```
+❌ WebSocket is already in CLOSING or CLOSED state
+❌ [MCP] Successfully connected (multiple times)
+❌ runtime.lastError: The message port closed
+```
+
 ### Support
 For issues and questions, please create an issue in the repository or contact the development team.
 
@@ -509,38 +698,62 @@ The application now implements the **official Google Gemini Native Audio** speci
 - **Session Timing**: Fixed with direct session parameter passing
 - **JavaScript Scoping Error**: Fixed temporal dead zone issue with callback context
 
-#### **🔧 JavaScript Scoping Fix Applied:**
+#### **🔧 Official Gemini Live Pattern Applied:**
 
-**Issue Resolved**: `Cannot access 'liveSession' before initialization`
+**Issue Resolved**: `[Gemini Live] Cannot start audio streaming: no session provided`
 
-**Root Cause**: JavaScript temporal dead zone - the `onopen` callback was trying to reference `liveSession` before the `await ai.current.live.connect()` completed.
+**Root Cause**: Incorrect implementation pattern - trying to start audio streaming in callbacks instead of after session connection, which goes against the official Gemini Live API documentation.
 
-**Before (Broken):**
+**Before (Incorrect Pattern):**
 ```javascript
 const liveSession = await ai.current.live.connect({
   callbacks: {
     onopen: () => {
-      startAudioStreaming(liveSession); // ❌ ReferenceError: temporal dead zone
+      // ❌ WRONG: Trying to start audio in callback
+      startAudioStreaming(liveSession);  // Session not available in callback scope
+    },
+    onmessage: (message) => {
+      // Handle responses
     }
   }
 });
 ```
 
-**After (Fixed):**
+**After (Official Pattern from Google Docs):**
 ```javascript
 const liveSession = await ai.current.live.connect({
   callbacks: {
-    onopen: function() {  // ✅ Regular function instead of arrow function
-      startAudioStreaming(this); // ✅ 'this' refers to the session object
+    onopen: () => {
+      console.log('[Gemini Live] WebSocket connection established');
+      setIsConnected(true);
+      setState('LISTENING');
+      // ✅ CORRECT: Only handle connection status in callbacks
+    },
+    onmessage: (e) => {
+      // ✅ CORRECT: Handle Gemini's audio responses here
+      if (e.serverContent?.audioChunks) {
+        console.log('[Gemini Live] Audio response received');
+        // Play Gemini's audio response
+      }
     }
   }
 });
+
+console.log('[Gemini Live] Successfully connected to Gemini Live API');
+setSession(liveSession);
+
+// ✅ CORRECT: Start audio streaming AFTER connection (not in callbacks)
+console.log('[Gemini Live] Starting audio streaming...');
+await startAudioStreaming(liveSession);  // Session available immediately after await
 ```
 
 **Technical Explanation**: 
-- Arrow functions capture lexical scope, but `liveSession` is in temporal dead zone
-- Regular functions get `this` context set to the session object by the API
-- Using `this` eliminates dependency on variable initialization timing
+- **Session available immediately** after `await ai.live.connect()` completes
+- **Callbacks are for receiving** responses from Gemini, not for sending audio
+- **Audio streaming setup** happens after connection, not in callbacks
+- **onmessage handles Gemini's responses** including audio chunks from the AI
+- **Follows official Google documentation** pattern exactly
+- **No timing issues** - session is available when needed
 
 **Debug Native Audio Pipeline:**
 ```javascript

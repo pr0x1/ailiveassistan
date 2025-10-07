@@ -27,13 +27,21 @@ export const useMcpClient = (): UseMcpClientReturn => {
   const [error, setError] = useState<AppError | null>(null);
   
   const connectionAttempts = useRef(0);
+  const isConnecting = useRef(false);
   const maxRetries = 3;
 
   /**
    * Connect to MCP server and discover available tools
    */
   const connect = useCallback(async () => {
+    // Prevent duplicate connections (React Strict Mode protection)
+    if (isConnecting.current || isConnected || client) {
+      console.log('[MCP] Connection already in progress or established, skipping');
+      return;
+    }
+
     try {
+      isConnecting.current = true;
       setError(null);
       connectionAttempts.current += 1;
 
@@ -58,6 +66,7 @@ export const useMcpClient = (): UseMcpClientReturn => {
       setClient(mcpClient);
       setIsConnected(true);
       connectionAttempts.current = 0;
+      isConnecting.current = false;
 
       // Discover available tools
       try {
@@ -88,6 +97,7 @@ export const useMcpClient = (): UseMcpClientReturn => {
 
       setIsConnected(false);
       setClient(null);
+      isConnecting.current = false;
 
       // Retry logic
       if (connectionAttempts.current < maxRetries) {
@@ -96,6 +106,9 @@ export const useMcpClient = (): UseMcpClientReturn => {
       } else {
         console.error('[MCP] Max connection attempts reached');
       }
+    } finally {
+      // Ensure isConnecting is always reset
+      isConnecting.current = false;
     }
   }, []);
 
@@ -178,13 +191,16 @@ export const useMcpClient = (): UseMcpClientReturn => {
    * Auto-connect on mount
    */
   useEffect(() => {
-    connect();
+    // Only connect if not already connected or connecting
+    if (!isConnected && !client && connectionAttempts.current === 0) {
+      connect();
+    }
     
     // Cleanup on unmount
     return () => {
       disconnect();
     };
-  }, []);
+  }, []); // Empty dependency array to prevent multiple connections
 
   /**
    * Handle connection errors and reconnection
