@@ -402,70 +402,114 @@ This project is licensed under the MIT License.
 - Check TypeScript errors with `npm run build`
 - Verify all imports use correct paths
 
-### **🔧 Critical Issues Fixed (v1.3.0) - Official Gemini Live Pattern**
+### **🔧 Critical Issues Fixed (v2.1.0) - Temporal Dead Zone & AudioWorklet PCM**
 
-#### **Issue: WebSocket Closes Immediately After Setup**
+#### **Issue 1: Temporal Dead Zone Error in JavaScript**
 **Symptoms:**
 ```
-[Gemini Live] Setup complete
-[Gemini Live] Sending audio chunk: 1932 bytes
-WebSocket is already in CLOSING or CLOSED state. ← ERROR from @google_genai.js
-[Gemini Live] WebSocket connection closed
-[Gemini Live] Sending audio chunk: 1932 bytes ← Still trying to send!
-WebSocket is already in CLOSING or CLOSED state. ← More errors
+useGeminiLive.ts:352 Uncaught (in promise) ReferenceError: Cannot access 'liveSession' before initialization
+    at Object.onopen (useGeminiLive.ts:352:39)
+    at WebSocket.onopenAwaitedCallback (@google_genai.js?v=92383393:5119:128)
 ```
 
-**Root Cause**: Missing `audioStreamEnd` signal and improper WebSocket lifecycle management according to official Gemini Live documentation.
+**Root Cause**: Trying to access `liveSession` variable in the `onopen` callback before it's initialized. This is a JavaScript Temporal Dead Zone error where the variable exists but hasn't been assigned yet.
 
-**Fix Applied**: Implemented official Gemini Live pattern with proper session lifecycle:
+**Fix Applied**: Moved `startAudioStreaming` outside the callback following official Google pattern:
 ```javascript
-// 1. Added WebSocket state tracking
-const isWebSocketOpen = useRef<boolean>(false);
-
-// 2. Proper callback handling
-callbacks: {
-  onopen: () => {
-    console.log('[Gemini Live] WebSocket connection established');
-    isWebSocketOpen.current = true; // ✅ Track WebSocket state
-    setIsConnected(true);
-    setState('LISTENING');
-  },
-  onclose: (event) => {
-    console.log('[Gemini Live] WebSocket connection closed:', event?.reason);
-    isWebSocketOpen.current = false; // ✅ Update state immediately
-    setIsConnected(false);
-    setState('IDLE');
-    // ✅ Stop MediaRecorder immediately when WebSocket closes
-    if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
-      console.log('[Gemini Live] Stopping MediaRecorder due to WebSocket close');
-      mediaRecorderRef.current.stop();
+// ❌ BEFORE (Incorrect - Temporal Dead Zone):
+const liveSession = await ai.current.live.connect({
+  callbacks: {
+    onopen: async () => {
+      console.log('[Gemini Live] WebSocket connection established');
+      // ❌ ERROR: liveSession not available yet in callback scope
+      await startAudioStreaming(liveSession); // ReferenceError!
     }
+  }
+});
+
+// ✅ AFTER (Correct - Official Google Pattern):
+const liveSession = await ai.current.live.connect({
+  callbacks: {
+    onopen: () => {
+      console.log('[Gemini Live] WebSocket connection established');
+      isWebSocketOpen.current = true;
+      setIsConnected(true);
+      setState('LISTENING');
+      // ✅ CORRECT: Only handle connection status in callbacks
+    }
+  }
+});
+
+console.log('[Gemini Live] Successfully connected to Gemini Live API');
+setSession(liveSession);
+
+// ✅ CORRECT: Start audio streaming AFTER liveSession is available
+console.log('[Gemini Live] Starting AudioWorklet audio streaming...');
+await startAudioStreaming(liveSession); // ✅ Variable is now initialized
+```
+
+#### **Issue 2: Incorrect Audio Format Causing WebSocket Instability**
+**Symptoms:**
+```
+[Gemini Live] Sending audio chunk: 1932 bytes
+WebSocket is already in CLOSING or CLOSED state. ← ERROR from @google_genai.js
+[Gemini Live] Failed to send audio chunk: Error
+```
+
+**Root Cause**: Using MediaRecorder with WebM/Opus format instead of the required PCM format for Gemini Live API. The API expects 16-bit PCM audio at 16kHz, but MediaRecorder produces compressed audio blobs.
+
+**Fix Applied**: Complete rewrite using AudioWorklet with proper PCM conversion:
+```javascript
+// 1. AudioWorklet Processor (public/audio-processor.js)
+class AudioCaptureProcessor extends AudioWorkletProcessor {
+  process(inputs, outputs, parameters) {
+    const input = inputs[0];
+    if (input && input.length > 0) {
+      const inputData = input[0]; // Float32Array from microphone
+      this.port.postMessage({
+        type: 'audioData',
+        audioData: inputData // Send raw Float32Array to main thread
+      });
+    }
+    return true;
   }
 }
 
-// 3. Added audioStreamEnd signal (CRITICAL - from official docs)
-const endConversation = useCallback(() => {
-  // ✅ Signal audio stream end (official Gemini Live pattern)
-  if (session && isWebSocketOpen.current) {
-    try {
-      console.log('[Gemini Live] Signaling audio stream end...');
-      session.sendRealtimeInput({ audioStreamEnd: true }); // ← MISSING PIECE!
-    } catch (signalError) {
-      console.warn('[Gemini Live] Failed to signal audio stream end:', signalError);
-    }
+// 2. PCM Conversion Functions (from functional reference)
+const createBlob = useCallback((data: Float32Array) => {
+  const l = data.length;
+  const int16 = new Int16Array(l);
+  for (let i = 0; i < l; i++) {
+    int16[i] = data[i] * 32768; // ✅ Convert Float32 to Int16
   }
-  
-  // Stop audio streaming
-  stopAudioStreaming();
-  
-  // Close session
-  if (session) {
-    session.close();
+  return {
+    data: encode(new Uint8Array(int16.buffer)), // ✅ Base64 encode
+    mimeType: 'audio/pcm;rate=16000', // ✅ Correct MIME type
+  };
+}, [encode]);
+
+// 3. Dual AudioContext Setup (16kHz input, 24kHz output)
+const inputAudioContext = new AudioContext({sampleRate: 16000});  // ✅ Input
+const outputAudioContext = new AudioContext({sampleRate: 24000}); // ✅ Output
+
+// 4. AudioWorklet Pipeline
+await inputAudioContext.audioWorklet.addModule('./audio-processor.js');
+const audioWorkletNode = new AudioWorkletNode(inputAudioContext, 'audio-capture-processor');
+
+audioWorkletNode.port.onmessage = (event) => {
+  if (event.data.type === 'audioData') {
+    const inputData = event.data.audioData; // Float32Array
+    const pcmBlob = createBlob(inputData);   // Convert to PCM
+    liveSession.sendRealtimeInput({ media: pcmBlob }); // ✅ Send PCM
   }
-}, [session, stopAudioStreaming]);
+};
+
+// 5. Audio Pipeline Connection
+const source = inputAudioContext.createMediaStreamSource(stream);
+source.connect(audioWorkletNode); // ✅ Real-time processing
 ```
 
-**Expected Behavior**: WebSocket stays open during conversation, closes gracefully with `audioStreamEnd` signal, no more "CLOSING or CLOSED state" errors.
+**Expected Behavior**: No more ReferenceError, proper PCM audio format sent to Gemini Live, stable WebSocket connection, no format-related errors, real-time audio processing with minimal latency.
 
 #### **Issue: Duplicate MCP Connections (React Strict Mode)**
 **Symptoms:**
