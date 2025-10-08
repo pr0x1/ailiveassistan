@@ -17,6 +17,7 @@ import { useAudioState } from './useAudioState';
 
 /**
  * Custom hook for managing Gemini Live session with audio and tool integration
+ * Now using AudioWorklet for proper PCM audio processing
  */
 export const useGeminiLive = (): UseGeminiLiveReturn => {
   const [session, setSession] = useState<any | null>(null);
@@ -33,9 +34,14 @@ export const useGeminiLive = (): UseGeminiLiveReturn => {
 
   const responseQueue = useRef<any[]>([]);
   const ai = useRef<GoogleGenAI | null>(null);
-  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
-  const audioStreamRef = useRef<MediaStream | null>(null);
+  const mediaStreamRef = useRef<MediaStream | null>(null);
+  const inputAudioContextRef = useRef<AudioContext | null>(null);
+  const outputAudioContextRef = useRef<AudioContext | null>(null);
+  const audioWorkletNodeRef = useRef<AudioWorkletNode | null>(null);
   const isWebSocketOpen = useRef<boolean>(false);
+  const isSetupComplete = useRef<boolean>(false);
+  const outputSourcesRef = useRef<Set<AudioBufferSourceNode>>(new Set());
+  const nextStartTimeRef = useRef<number>(0);
 
   /**
    * Initialize Google Generative AI client
@@ -53,7 +59,63 @@ export const useGeminiLive = (): UseGeminiLiveReturn => {
   }, []);
 
   /**
-   * Start audio streaming to Gemini Live using official API
+   * PCM Audio encoding functions (from functional reference)
+   */
+  const encode = useCallback((bytes: Uint8Array): string => {
+    let binary = '';
+    const len = bytes.byteLength;
+    for (let i = 0; i < len; i++) {
+      binary += String.fromCharCode(bytes[i]);
+    }
+    return btoa(binary);
+  }, []);
+
+  const decode = useCallback((base64: string): Uint8Array => {
+    const binaryString = atob(base64);
+    const len = binaryString.length;
+    const bytes = new Uint8Array(len);
+    for (let i = 0; i < len; i++) {
+      bytes[i] = binaryString.charCodeAt(i);
+    }
+    return bytes;
+  }, []);
+
+  const createBlob = useCallback((data: Float32Array) => {
+    const l = data.length;
+    const int16 = new Int16Array(l);
+    for (let i = 0; i < l; i++) {
+      int16[i] = data[i] * 32768; // Convert Float32 to Int16
+    }
+    return {
+      data: encode(new Uint8Array(int16.buffer)),
+      mimeType: 'audio/pcm;rate=16000',
+    };
+  }, [encode]);
+
+  /**
+   * Decode audio data for playback (from functional reference)
+   */
+  const decodeAudioData = useCallback(async (
+    data: Uint8Array,
+    ctx: AudioContext,
+    sampleRate: number,
+    numChannels: number,
+  ): Promise<AudioBuffer> => {
+    const dataInt16 = new Int16Array(data.buffer);
+    const frameCount = dataInt16.length / numChannels;
+    const buffer = ctx.createBuffer(numChannels, frameCount, sampleRate);
+
+    for (let channel = 0; channel < numChannels; channel++) {
+      const channelData = buffer.getChannelData(channel);
+      for (let i = 0; i < frameCount; i++) {
+        channelData[i] = dataInt16[i * numChannels + channel] / 32768.0;
+      }
+    }
+    return buffer;
+  }, []);
+
+  /**
+   * Start audio streaming using AudioWorklet (proper PCM implementation)
    */
   const startAudioStreaming = useCallback(async (liveSession: any) => {
     if (!liveSession) {
@@ -62,92 +124,111 @@ export const useGeminiLive = (): UseGeminiLiveReturn => {
     }
 
     try {
-      console.log('[Gemini Live] Setting up audio streaming...');
+      console.log('[Gemini Live] Setting up AudioWorklet-based audio streaming...');
       
+      // Create dual AudioContext setup (like functional reference)
+      const inputAudioContext = new (window.AudioContext || (window as any).webkitAudioContext)({
+        sampleRate: 16000
+      });
+      const outputAudioContext = new (window.AudioContext || (window as any).webkitAudioContext)({
+        sampleRate: 24000
+      });
+      
+      inputAudioContextRef.current = inputAudioContext;
+      outputAudioContextRef.current = outputAudioContext;
+
       // Get microphone stream
       const stream = await navigator.mediaDevices.getUserMedia({ 
-        audio: {
-          sampleRate: 16000,
-          channelCount: 1,
-          echoCancellation: true,
-          noiseSuppression: true
-        }
+        audio: true
       });
       
-      audioStreamRef.current = stream;
+      mediaStreamRef.current = stream;
       console.log('[Gemini Live] Audio stream obtained');
 
-      // Create MediaRecorder for audio chunks
-      const mediaRecorder = new MediaRecorder(stream, {
-        mimeType: 'audio/webm;codecs=opus'
-      });
+      // Load AudioWorklet processor
+      console.log('[Gemini Live] Loading AudioWorklet processor...');
+      await inputAudioContext.audioWorklet.addModule('./audio-processor.js');
       
-      mediaRecorderRef.current = mediaRecorder;
+      // Create AudioWorkletNode
+      const audioWorkletNode = new AudioWorkletNode(inputAudioContext, 'audio-capture-processor');
+      audioWorkletNodeRef.current = audioWorkletNode;
 
-      // Handle audio data chunks using official API
-      mediaRecorder.ondataavailable = (event) => {
-        if (event.data.size > 0 && liveSession) {
-          console.log('[Gemini Live] Sending audio chunk:', event.data.size, 'bytes');
+      // Handle audio data from worklet
+      audioWorkletNode.port.onmessage = (event) => {
+        if (event.data.type === 'audioData') {
+          const inputData = event.data.audioData; // Float32Array
+          const pcmBlob = createBlob(inputData);
+          
           try {
-            // Check if session is still connected before sending
-            // Note: Gemini Live session doesn't have readyState property like WebSocket
-            // Instead, we'll use try-catch and check if session is still valid
-            liveSession.sendRealtimeInput({
-              media: event.data  // Direct blob - API handles conversion
-            });
-            console.log('[Gemini Live] Audio chunk sent successfully');
+            liveSession.sendRealtimeInput({ media: pcmBlob });
           } catch (sendError) {
-            console.error('[Gemini Live] Failed to send audio chunk:', sendError);
+            console.error('[Gemini Live] Failed to send PCM audio chunk:', sendError);
             
             // Check if error indicates connection is closed
             const errorMessage = (sendError as Error)?.message || String(sendError) || '';
             if (errorMessage.includes('CLOSING') || errorMessage.includes('CLOSED') || 
                 errorMessage.includes('connection') || errorMessage.includes('WebSocket')) {
-              console.warn('[Gemini Live] Connection appears closed, stopping audio recording');
-              // Stop recording if connection appears to be closed
-              if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
-                mediaRecorderRef.current.stop();
-              }
+              console.warn('[Gemini Live] Connection appears closed, stopping audio worklet');
+              stopAudioStreaming();
             }
           }
         }
       };
 
-      mediaRecorder.onerror = (event) => {
-        console.error('[Gemini Live] MediaRecorder error:', event);
-      };
-
-      // Start recording in small chunks for real-time streaming
-      mediaRecorder.start(100); // 100ms chunks
-      console.log('[Gemini Live] Audio streaming started');
+      // Connect audio pipeline
+      const source = inputAudioContext.createMediaStreamSource(stream);
+      source.connect(audioWorkletNode);
+      
+      console.log('[Gemini Live] AudioWorklet audio streaming started');
 
     } catch (streamError) {
-      console.error('[Gemini Live] Failed to start audio streaming:', streamError);
+      console.error('[Gemini Live] Failed to start AudioWorklet streaming:', streamError);
       setError({
         type: 'AUDIO',
-        message: 'Failed to start audio streaming',
+        message: 'Failed to start AudioWorklet audio streaming',
         details: streamError
       });
     }
-  }, []);
+  }, [createBlob]);
 
   /**
-   * Stop audio streaming
+   * Stop audio streaming (AudioWorklet cleanup)
    */
   const stopAudioStreaming = useCallback(() => {
-    console.log('[Gemini Live] Stopping audio streaming...');
+    console.log('[Gemini Live] Stopping AudioWorklet audio streaming...');
     
-    if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
-      mediaRecorderRef.current.stop();
-      mediaRecorderRef.current = null;
+    // Disconnect AudioWorklet
+    if (audioWorkletNodeRef.current) {
+      audioWorkletNodeRef.current.disconnect();
+      audioWorkletNodeRef.current = null;
     }
 
-    if (audioStreamRef.current) {
-      audioStreamRef.current.getTracks().forEach(track => track.stop());
-      audioStreamRef.current = null;
+    // Stop media stream
+    if (mediaStreamRef.current) {
+      mediaStreamRef.current.getTracks().forEach((track: MediaStreamTrack) => track.stop());
+      mediaStreamRef.current = null;
     }
 
-    console.log('[Gemini Live] Audio streaming stopped');
+    // Close audio contexts
+    if (inputAudioContextRef.current) {
+      inputAudioContextRef.current.close().catch(console.error);
+      inputAudioContextRef.current = null;
+    }
+
+    if (outputAudioContextRef.current) {
+      outputAudioContextRef.current.close().catch(console.error);
+      outputAudioContextRef.current = null;
+    }
+
+    // Stop output sources
+    if (outputSourcesRef.current) {
+      outputSourcesRef.current.forEach(source => source.stop());
+      outputSourcesRef.current.clear();
+    }
+    
+    nextStartTimeRef.current = 0;
+
+    console.log('[Gemini Live] AudioWorklet audio streaming stopped');
   }, []);
 
   /**
@@ -199,10 +280,8 @@ export const useGeminiLive = (): UseGeminiLiveReturn => {
     }
   }, [session, mcpConnected, executeToolCall, setState]);
 
-  // Note: processServerContent removed as it's not needed for enhanced mock implementation
-
   /**
-   * Start conversation with Gemini Live
+   * Start conversation with Gemini Live (updated with transcriptions)
    */
   const startConversation = useCallback(async () => {
     if (!ai.current) {
@@ -247,7 +326,7 @@ export const useGeminiLive = (): UseGeminiLiveReturn => {
         return;
       }
 
-      // Connect to real Gemini Live API with WebSocket audio streaming
+      // Connect to real Gemini Live API with proper configuration
       console.log('[Gemini Live] Connecting to Gemini Live API...');
       
       const liveSession = await ai.current.live.connect({
@@ -268,35 +347,62 @@ export const useGeminiLive = (): UseGeminiLiveReturn => {
             setIsConnected(true);
             setState('LISTENING');
           },
-          onmessage: (e: any) => {
+          onmessage: async (e: any) => {
             console.log('[Gemini Live] Received message:', e);
             
             // Handle different message types from LiveServerMessage
             if (e.serverContent) {
               console.log('[Gemini Live] Server content received');
-              setState('SPEAKING');
               
-              // Handle audio responses from Gemini
-              if (e.serverContent.audioChunks) {
-                console.log('[Gemini Live] Audio response received');
-                // TODO: Play audio response from Gemini
-                for (const chunk of e.serverContent.audioChunks) {
-                  console.log('[Gemini Live] Audio chunk:', chunk.data?.length, 'bytes');
-                }
+              // Handle input transcriptions (user speaking)
+              if (e.serverContent.inputTranscription) {
+                console.log('[Gemini Live] Input transcription:', e.serverContent.inputTranscription.text);
+                // TODO: Update UI with real-time user transcription
+                setState('LISTENING');
               }
-              
-              // Process text content if available
+
+              // Handle output transcriptions (Gemini speaking)
+              if (e.serverContent.outputTranscription) {
+                console.log('[Gemini Live] Output transcription:', e.serverContent.outputTranscription.text);
+                setState('SPEAKING');
+                
+                // Add transcription to messages
+                const assistantMessage: ChatMessage = {
+                  id: Date.now().toString(),
+                  role: 'assistant',
+                  content: e.serverContent.outputTranscription.text,
+                  timestamp: new Date()
+                };
+                setMessages(prev => [...prev, assistantMessage]);
+              }
+
+              // Handle audio responses from Gemini
               if (e.serverContent.modelTurn?.parts) {
                 for (const part of e.serverContent.modelTurn.parts) {
-                  if (part.text) {
-                    console.log('[Gemini Live] Text response:', part.text);
-                    const assistantMessage: ChatMessage = {
-                      id: Date.now().toString(),
-                      role: 'assistant',
-                      content: part.text,
-                      timestamp: new Date()
-                    };
-                    setMessages(prev => [...prev, assistantMessage]);
+                  if (part.inlineData?.data) {
+                    // Play audio response
+                    if (outputAudioContextRef.current) {
+                      try {
+                        nextStartTimeRef.current = Math.max(nextStartTimeRef.current, outputAudioContextRef.current.currentTime);
+                        const audioBuffer = await decodeAudioData(
+                          decode(part.inlineData.data),
+                          outputAudioContextRef.current,
+                          24000,
+                          1,
+                        );
+                        const source = outputAudioContextRef.current.createBufferSource();
+                        source.buffer = audioBuffer;
+                        source.connect(outputAudioContextRef.current.destination);
+                        source.addEventListener('ended', () => {
+                          outputSourcesRef.current.delete(source);
+                        });
+                        source.start(nextStartTimeRef.current);
+                        nextStartTimeRef.current += audioBuffer.duration;
+                        outputSourcesRef.current.add(source);
+                      } catch (audioError) {
+                        console.error('[Gemini Live] Failed to play audio response:', audioError);
+                      }
+                    }
                   }
                 }
               }
@@ -306,11 +412,22 @@ export const useGeminiLive = (): UseGeminiLiveReturn => {
                 console.log('[Gemini Live] Turn complete, returning to listening');
                 setTimeout(() => setState('LISTENING'), 1000);
               }
+
+              // Handle interruptions
+              if (e.serverContent.interrupted) {
+                console.log('[Gemini Live] Audio interrupted, stopping playback');
+                outputSourcesRef.current.forEach(source => {
+                  source.stop();
+                  outputSourcesRef.current.delete(source);
+                });
+                nextStartTimeRef.current = 0;
+              }
             } else if (e.toolCall) {
               console.log('[Gemini Live] Tool call received');
               processToolCalls(e);
             } else if (e.setupComplete) {
               console.log('[Gemini Live] Setup complete');
+              isSetupComplete.current = true;
             } else {
               console.log('[Gemini Live] Unknown message type:', e);
             }
@@ -324,22 +441,14 @@ export const useGeminiLive = (): UseGeminiLiveReturn => {
               details: error
             });
             setState('IDLE');
-            // Stop MediaRecorder when WebSocket has error
-            if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
-              console.log('[Gemini Live] Stopping MediaRecorder due to WebSocket error');
-              mediaRecorderRef.current.stop();
-            }
+            stopAudioStreaming();
           },
           onclose: (event: any) => {
             console.log('[Gemini Live] WebSocket connection closed:', event?.reason || 'Unknown reason');
             isWebSocketOpen.current = false;
             setIsConnected(false);
             setState('IDLE');
-            // Stop MediaRecorder immediately when WebSocket closes
-            if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
-              console.log('[Gemini Live] Stopping MediaRecorder due to WebSocket close');
-              mediaRecorderRef.current.stop();
-            }
+            stopAudioStreaming();
           }
         }
       });
@@ -347,8 +456,8 @@ export const useGeminiLive = (): UseGeminiLiveReturn => {
       console.log('[Gemini Live] Successfully connected to Gemini Live API');
       setSession(liveSession);
 
-      // Start audio streaming AFTER connection (not in callbacks)
-      console.log('[Gemini Live] Starting audio streaming...');
+      // Start audio streaming AFTER liveSession is available (fixes Temporal Dead Zone)
+      console.log('[Gemini Live] Starting AudioWorklet audio streaming...');
       await startAudioStreaming(liveSession);
 
     } catch (connectionError) {
@@ -360,9 +469,7 @@ export const useGeminiLive = (): UseGeminiLiveReturn => {
       });
       setState('IDLE');
     }
-  }, [ai, mcpConnected, availableTools, currentVoice, setState, isConnected, processToolCalls, startAudioStreaming]);
-
-  // Note: processMessageLoop removed as it's not needed for current implementation
+  }, [ai, mcpConnected, availableTools, currentVoice, setState, processToolCalls, startAudioStreaming, decodeAudioData, decode]);
 
   /**
    * End conversation
@@ -395,6 +502,7 @@ export const useGeminiLive = (): UseGeminiLiveReturn => {
     setSession(null);
     setIsConnected(false);
     isWebSocketOpen.current = false;
+    isSetupComplete.current = false;
     setState('IDLE');
     responseQueue.current = [];
   }, [session, setState, stopAudioStreaming]);
@@ -458,7 +566,8 @@ export const useGeminiLive = (): UseGeminiLiveReturn => {
    */
   useEffect(() => {
     return () => {
-      // Use a ref to avoid dependency issues
+      // Cleanup resources on unmount
+      stopAudioStreaming();
       if (session) {
         try {
           session.close();
