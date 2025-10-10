@@ -43,6 +43,10 @@ export const useGeminiLive = (): UseGeminiLiveReturn => {
   const outputSourcesRef = useRef<Set<AudioBufferSourceNode>>(new Set());
   const nextStartTimeRef = useRef<number>(0);
 
+  // ✅ FIX: Add refs for session and availableTools persistence (React closure fix)
+  const sessionRef = useRef<any>(null);
+  const availableToolsRef = useRef<any[]>([]);
+
   /**
    * Initialize Google Generative AI client
    */
@@ -57,6 +61,31 @@ export const useGeminiLive = (): UseGeminiLiveReturn => {
       });
     }
   }, []);
+
+  /**
+   * ✅ FIX: Keep refs synchronized with state values (React closure fix)
+   */
+  useEffect(() => {
+    sessionRef.current = session;
+  }, [session]);
+
+  useEffect(() => {
+    availableToolsRef.current = availableTools;
+  }, [availableTools]);
+
+  /**
+   * Session lifecycle debugging - Monitor when session state changes
+   */
+  useEffect(() => {
+    console.log('[DEBUG] Session state changed:', {
+      hasSession: !!session,
+      sessionType: session ? typeof session : 'null',
+      sessionConstructor: session?.constructor?.name || 'N/A',
+      isConnected: isConnected,
+      timestamp: new Date().toISOString(),
+      stackTrace: new Error().stack?.split('\n')[1]?.trim() || 'unknown'
+    });
+  }, [session]);
 
   /**
    * PCM Audio encoding functions (from functional reference)
@@ -232,14 +261,37 @@ export const useGeminiLive = (): UseGeminiLiveReturn => {
   }, []);
 
   /**
-   * Process tool calls from Gemini Live
+   * ✅ FIX: Process tool calls using direct session parameter (Race condition fix)
    */
-  const processToolCalls = useCallback(async (toolCallMessage: ToolCallMessage) => {
-    if (!session || !mcpConnected) {
-      console.error('[Gemini Live] Cannot process tool calls: session or MCP not connected');
+  const processToolCalls = useCallback(async (
+    toolCallMessage: ToolCallMessage,
+    currentSession: any  // ← Add session parameter to eliminate race condition
+  ) => {
+    // ✅ FIX: Use session parameter instead of ref to avoid race condition
+    const currentAvailableTools = availableToolsRef.current;
+
+    console.log('[DEBUG] Tool call validation:', {
+      hasSession: !!currentSession,
+      mcpConnected: mcpConnected,
+      availableToolsCount: currentAvailableTools.length,
+      toolCallName: toolCallMessage.toolCall.functionCalls[0]?.name,
+      toolCallId: toolCallMessage.toolCall.functionCalls[0]?.id,
+      timestamp: new Date().toISOString()
+    });
+
+    if (!currentSession || !mcpConnected) {
+      console.error('[Gemini Live] Cannot process tool calls: session or MCP not connected', {
+        session: !!currentSession,
+        mcpConnected: mcpConnected,
+        availableTools: currentAvailableTools.length,
+        toolCall: toolCallMessage.toolCall.functionCalls[0]?.name,
+        toolCallArgs: toolCallMessage.toolCall.functionCalls[0]?.args,
+        timestamp: new Date().toISOString()
+      });
       return;
     }
 
+    console.log('[Gemini Live] Tool call validation passed, proceeding with execution');
     setState('PROCESSING');
     
     try {
@@ -250,25 +302,59 @@ export const useGeminiLive = (): UseGeminiLiveReturn => {
         
         try {
           const response = await executeToolCall(functionCall);
-          functionResponses.push(response);
+          
+          // ✅ FIX: Validate response structure before adding
+          if (response && response.id && response.name && response.response !== undefined) {
+            functionResponses.push(response);
+            console.log(`[Gemini Live] Valid response for ${functionCall.name}:`, {
+              id: response.id,
+              name: response.name,
+              hasResponse: !!response.response,
+              responseType: typeof response.response
+            });
+          } else {
+            console.warn(`[Gemini Live] Invalid response structure for ${functionCall.name}:`, response);
+            
+            // Create fallback response
+            functionResponses.push({
+              id: functionCall.id,
+              name: functionCall.name,
+              response: {
+                success: false,
+                message: `Invalid response structure from tool ${functionCall.name}`,
+                data: null
+              }
+            });
+          }
         } catch (toolError: any) {
           console.error(`[Gemini Live] Tool execution failed: ${functionCall.name}`, toolError);
           
-          // Create error response
+          // ✅ FIX: Create proper error response structure
           functionResponses.push({
             id: functionCall.id,
             name: functionCall.name,
             response: {
-              error: true,
-              message: `Tool execution failed: ${toolError?.message || 'Unknown error'}`
+              success: false,
+              message: `Tool execution failed: ${toolError?.message || 'Unknown error'}`,
+              error: toolError?.message || 'Unknown error',
+              data: null
             }
           });
         }
       }
 
-      // Send tool responses back to Gemini Live
-      console.log('[Gemini Live] Sending tool responses...');
-      await session.sendToolResponse({ functionResponses });
+      // ✅ FIX: Validate functionResponses array before sending
+      if (functionResponses.length === 0) {
+        console.error('[Gemini Live] No valid function responses to send');
+        return;
+      }
+
+      console.log('[Gemini Live] Sending tool responses...', {
+        count: functionResponses.length,
+        responses: functionResponses.map(r => ({ id: r.id, name: r.name, hasResponse: !!r.response }))
+      });
+      
+      await currentSession.sendToolResponse({toolResponses: functionResponses });
       
     } catch (error) {
       console.error('[Gemini Live] Failed to process tool calls:', error);
@@ -278,7 +364,7 @@ export const useGeminiLive = (): UseGeminiLiveReturn => {
         details: error
       });
     }
-  }, [session, mcpConnected, executeToolCall, setState]);
+  }, [mcpConnected, executeToolCall, setState]); // ✅ FIX: Removed session and availableTools from dependencies
 
   /**
    * Start conversation with Gemini Live (updated with transcriptions)
@@ -293,7 +379,20 @@ export const useGeminiLive = (): UseGeminiLiveReturn => {
       return;
     }
 
+    // ✅ NUEVO: Logging de timing de conexiones
+    console.log('[DEBUG] Starting conversation with state:', {
+      mcpConnected: mcpConnected,
+      availableToolsCount: availableTools.length,
+      hasAiClient: !!ai.current,
+      timestamp: new Date().toISOString()
+    });
+
     if (!mcpConnected) {
+      console.error('[Gemini Live] MCP not connected at conversation start:', {
+        mcpConnected: mcpConnected,
+        availableTools: availableTools.length,
+        timestamp: new Date().toISOString()
+      });
       setError({
         type: 'CONNECTION',
         message: 'MCP server not connected. Please wait for connection.',
@@ -342,12 +441,21 @@ export const useGeminiLive = (): UseGeminiLiveReturn => {
         },
         callbacks: {
           onopen: () => {
+            console.log('[DEBUG] WebSocket onopen - session state:', {
+              hasSession: !!sessionRef.current,
+              timestamp: new Date().toISOString()
+            });
             console.log('[Gemini Live] WebSocket connection established');
             isWebSocketOpen.current = true;
             setIsConnected(true);
             setState('LISTENING');
           },
           onmessage: async (e: any) => {
+            console.log('[DEBUG] WebSocket onmessage - session state:', {
+              hasSession: !!sessionRef.current,
+              messageType: Object.keys(e)[0],
+              timestamp: new Date().toISOString()
+            });
             console.log('[Gemini Live] Received message:', e);
             
             // Handle different message types from LiveServerMessage
@@ -423,9 +531,23 @@ export const useGeminiLive = (): UseGeminiLiveReturn => {
                 nextStartTimeRef.current = 0;
               }
             } else if (e.toolCall) {
-              console.log('[Gemini Live] Tool call received');
-              processToolCalls(e);
+              // ✅ NUEVO: Logging detallado cuando llega tool call
+              console.log('[Gemini Live] Tool call received:', {
+                toolCall: e.toolCall,
+                sessionActive: !!liveSession,
+                mcpConnected: mcpConnected,
+                availableToolsCount: availableTools.length,
+                timestamp: new Date().toISOString()
+              });
+              // ✅ FIX: Pass liveSession directly from closure to eliminate race condition
+              processToolCalls(e, liveSession);
             } else if (e.setupComplete) {
+              console.log('[DEBUG] Setup complete - session state:', {
+                hasSession: !!session,
+                sessionActive: !!session,
+                isSetupComplete: isSetupComplete.current,
+                timestamp: new Date().toISOString()
+              });
               console.log('[Gemini Live] Setup complete');
               isSetupComplete.current = true;
             } else {
@@ -433,6 +555,11 @@ export const useGeminiLive = (): UseGeminiLiveReturn => {
             }
           },
           onerror: (error: any) => {
+            console.log('[DEBUG] WebSocket onerror - session state:', {
+              hasSession: !!session,
+              error: error,
+              timestamp: new Date().toISOString()
+            });
             console.error('[Gemini Live] WebSocket error:', error);
             isWebSocketOpen.current = false;
             setError({
@@ -444,6 +571,11 @@ export const useGeminiLive = (): UseGeminiLiveReturn => {
             stopAudioStreaming();
           },
           onclose: (event: any) => {
+            console.log('[DEBUG] WebSocket onclose - session state:', {
+              hasSession: !!session,
+              reason: event?.reason,
+              timestamp: new Date().toISOString()
+            });
             console.log('[Gemini Live] WebSocket connection closed:', event?.reason || 'Unknown reason');
             isWebSocketOpen.current = false;
             setIsConnected(false);

@@ -105,13 +105,47 @@ export const processToolExecutionResponse = (response: any) => {
 };
 
 /**
- * Formats tool response for Gemini Live
+ * Formats tool response for Gemini Live API
  */
 export const formatToolResponseForGemini = (toolName: string, toolId: string, response: any) => {
+  // ✅ FIX: Handle empty responses from MCP server
+  if (!response || (Array.isArray(response) && response.length === 0)) {
+    return {
+      id: toolId,
+      name: toolName,
+      response: {
+        success: false,
+        message: `No data found for the requested ${toolName} parameters. Please verify the input values and try again.`,
+        data: null,
+        isEmpty: true
+      }
+    };
+  }
+
+  // ✅ FIX: Handle error responses
+  if (response.error) {
+    return {
+      id: toolId,
+      name: toolName,
+      response: {
+        success: false,
+        message: response.message || `Tool execution failed: ${response.error}`,
+        error: response.error,
+        data: null
+      }
+    };
+  }
+
+  // ✅ FIX: Handle successful responses with proper structure
   return {
     id: toolId,
     name: toolName,
-    response: response
+    response: {
+      success: true,
+      message: `Successfully executed ${toolName}`,
+      data: response,
+      timestamp: new Date().toISOString()
+    }
   };
 };
 
