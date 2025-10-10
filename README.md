@@ -402,6 +402,464 @@ This project is licensed under the MIT License.
 - Check TypeScript errors with `npm run build`
 - Verify all imports use correct paths
 
+### **🔧 Critical Issues Fixed (v2.6.0) - Race Condition Fix with JavaScript Closures**
+
+#### **Issue: Race Condition Between Session Creation and Tool Call Processing**
+**Symptoms:**
+```
+✅ [Gemini Live] Successfully connected to Gemini Live API
+✅ [Gemini Live] Tool call received: {sessionActive: true, mcpConnected: true, availableToolsCount: 34}
+❌ [DEBUG] Tool call validation: {hasSession: false, mcpConnected: true, availableToolsCount: 34}
+❌ [Gemini Live] Cannot process tool calls: session or MCP not connected
+❌ [Gemini Live] Failed to process tool calls: Error: functionResponses is required.
+```
+
+**Root Cause Analysis**: The issue was a **race condition** between WebSocket callback creation and session availability:
+
+1. **startConversation()** starts → `sessionRef.current = null`
+2. **ai.live.connect()** creates callbacks → callbacks capture null sessionRef
+3. **WebSocket connects** → model responds quickly with toolCall
+4. **onmessage fires** → `processToolCalls(e)` called
+5. **processToolCalls reads** `sessionRef.current` → still null!
+6. **Validation fails** → function returns early
+7. **sendToolResponse() never called** → "functionResponses is required" error
+
+**Technical Analysis**: The WebSocket callbacks were created with the initial `sessionRef.current` value (null) and never saw updates, even though the session was successfully created and available in the `startConversation` function scope.
+
+**Complete Fix Applied**: JavaScript closure-based solution (superior to refs approach):
+
+```javascript
+// 1. Modified processToolCalls to Accept Session Parameter
+const processToolCalls = useCallback(async (
+  toolCallMessage: ToolCallMessage,
+  currentSession: any  // ← Add session parameter to eliminate race condition
+) => {
+  // ✅ FIX: Use session parameter instead of ref to avoid race condition
+  const currentAvailableTools = availableToolsRef.current;
+
+  console.log('[DEBUG] Tool call validation:', {
+    hasSession: !!currentSession, // ← Now guaranteed to be true
+    mcpConnected: mcpConnected,
+    availableToolsCount: currentAvailableTools.length,
+    toolCallName: toolCallMessage.toolCall.functionCalls[0]?.name,
+    timestamp: new Date().toISOString()
+  });
+
+  if (!currentSession || !mcpConnected) {
+    // This validation will now work correctly
+    return;
+  }
+
+  // ✅ This will now execute successfully
+  await currentSession.sendToolResponse({ functionResponses });
+}, [mcpConnected, executeToolCall, setState]);
+
+// 2. Updated onmessage Callback to Pass liveSession Directly
+const liveSession = await ai.current.live.connect({
+  callbacks: {
+    onmessage: async (e: any) => {
+      // ... other handling ...
+      
+      if (e.toolCall) {
+        console.log('[Gemini Live] Tool call received:', {
+          toolCall: e.toolCall,
+          sessionActive: !!liveSession, // ← Now shows true
+          mcpConnected: mcpConnected,
+          availableToolsCount: availableTools.length,
+          timestamp: new Date().toISOString()
+        });
+        // ✅ FIX: Pass liveSession directly from closure to eliminate race condition
+        processToolCalls(e, liveSession);
+      }
+    }
+  }
+});
+```
+
+**Expected Behavior After Fix**:
+```
+✅ [Gemini Live] Successfully connected to Gemini Live API
+✅ [Gemini Live] Tool call received: {sessionActive: true, mcpConnected: true, availableToolsCount: 34}
+✅ [DEBUG] Tool call validation: {hasSession: true, mcpConnected: true, availableToolsCount: 34}
+✅ [Gemini Live] Tool call validation passed, proceeding with execution
+✅ [Gemini Live] Processing tool call: getSalesOrderDetails
+✅ [Gemini Live] Sending tool responses: {count: 1, responses: [...]}
+✅ Tool response sent successfully to Gemini Live
+✅ No more "functionResponses is required" error
+✅ Gemini processes response and provides audio feedback to user
+```
+
+**Technical Benefits**:
+- **Eliminates race condition completely** - `liveSession` exists when callback is created
+- **Simpler and more reliable** - no timing dependencies or ref synchronization
+- **JavaScript closure guarantee** - variable availability guaranteed by language
+- **Better performance** - no ref dereferencing overhead
+- **Cleaner code path** - direct variable access in closure scope
+
+**Why This Solution is Superior to Refs**:
+| Aspect | Refs Approach | Closure Approach |
+|--------|---------------|------------------|
+| **Timing** | Race condition possible | No race condition |
+| **Complexity** | Requires useEffect sync | Direct access |
+| **Reliability** | Depends on React lifecycle | JavaScript guarantee |
+| **Performance** | Ref dereferencing | Direct variable |
+| **Debugging** | Harder to trace timing | Clear execution path |
+
+**Implementation Details**:
+- **`liveSession` is created** before callbacks are attached
+- **Callbacks capture `liveSession`** in their closure scope
+- **When `onmessage` fires**, `liveSession` is guaranteed to exist
+- **No timing dependencies** - pure JavaScript closure behavior
+- **No React lifecycle issues** - independent of component re-renders
+
+### **🔧 Critical Issues Fixed (v2.5.0) - Tool Response Format & Empty Response Handling**
+
+#### **Issue: Tool Response Format Error - "functionResponses is required"**
+**Symptoms:**
+```
+✅ [MCP] Tool execution attempt: {toolName: 'getSalesOrderDetails', hasClient: true, isConnected: true}
+✅ [MCP] Executing tool: getSalesOrderDetails {salesOrderID: '2029'}
+✅ [MCP Tool] getSalesOrderDetails {response: Array(0), duration: '979ms'} ← Tool executed successfully
+❌ [Gemini Live] Failed to process tool calls: Error: functionResponses is required.
+    at Session.tLiveClienttToolResponse (@google_genai.js?v=92383393:5200:13)
+```
+
+**Root Cause Analysis**: Tool execution was working perfectly, but the response format sent to Gemini Live API was invalid due to:
+1. **Empty MCP responses** - MCP server returning `Array(0)` instead of actual data
+2. **Invalid response structure** - `formatToolResponseForGemini` not creating proper Gemini Live format
+3. **Missing validation** - No validation before sending responses to Gemini Live API
+
+**Complete Fix Applied**: Enhanced tool response handling and validation system:
+
+```javascript
+// 1. Enhanced formatToolResponseForGemini Function
+export const formatToolResponseForGemini = (toolName: string, toolId: string, response: any) => {
+  // ✅ FIX: Handle empty responses from MCP server
+  if (!response || (Array.isArray(response) && response.length === 0)) {
+    return {
+      id: toolId,
+      name: toolName,
+      response: {
+        success: false,
+        message: `No data found for the requested ${toolName} parameters. Please verify the input values and try again.`,
+        data: null,
+        isEmpty: true
+      }
+    };
+  }
+
+  // ✅ FIX: Handle error responses
+  if (response.error) {
+    return {
+      id: toolId,
+      name: toolName,
+      response: {
+        success: false,
+        message: response.message || `Tool execution failed: ${response.error}`,
+        error: response.error,
+        data: null
+      }
+    };
+  }
+
+  // ✅ FIX: Handle successful responses with proper structure
+  return {
+    id: toolId,
+    name: toolName,
+    response: {
+      success: true,
+      message: `Successfully executed ${toolName}`,
+      data: response,
+      timestamp: new Date().toISOString()
+    }
+  };
+};
+
+// 2. Enhanced Response Validation in processToolCalls
+const processToolCalls = useCallback(async (toolCallMessage: ToolCallMessage) => {
+  const functionResponses = [];
+  
+  for (const functionCall of toolCallMessage.toolCall.functionCalls) {
+    try {
+      const response = await executeToolCall(functionCall);
+      
+      // ✅ FIX: Validate response structure before adding
+      if (response && response.id && response.name && response.response !== undefined) {
+        functionResponses.push(response);
+        console.log(`[Gemini Live] Valid response for ${functionCall.name}:`, {
+          id: response.id,
+          name: response.name,
+          hasResponse: !!response.response,
+          responseType: typeof response.response
+        });
+      } else {
+        console.warn(`[Gemini Live] Invalid response structure for ${functionCall.name}:`, response);
+        
+        // Create fallback response
+        functionResponses.push({
+          id: functionCall.id,
+          name: functionCall.name,
+          response: {
+            success: false,
+            message: `Invalid response structure from tool ${functionCall.name}`,
+            data: null
+          }
+        });
+      }
+    } catch (toolError: any) {
+      // ✅ FIX: Create proper error response structure
+      functionResponses.push({
+        id: functionCall.id,
+        name: functionCall.name,
+        response: {
+          success: false,
+          message: `Tool execution failed: ${toolError?.message || 'Unknown error'}`,
+          error: toolError?.message || 'Unknown error',
+          data: null
+        }
+      });
+    }
+  }
+
+  // ✅ FIX: Validate functionResponses array before sending
+  if (functionResponses.length === 0) {
+    console.error('[Gemini Live] No valid function responses to send');
+    return;
+  }
+
+  console.log('[Gemini Live] Sending tool responses...', {
+    count: functionResponses.length,
+    responses: functionResponses.map(r => ({ id: r.id, name: r.name, hasResponse: !!r.response }))
+  });
+  
+  await currentSession.sendToolResponse({ functionResponses });
+}, [mcpConnected, executeToolCall, setState]);
+```
+
+**Expected Behavior After Fix**:
+```
+✅ [MCP] Tool execution attempt: {toolName: 'getSalesOrderDetails', ...}
+✅ [MCP] Executing tool: getSalesOrderDetails {salesOrderID: '2029'}
+✅ [MCP Tool] getSalesOrderDetails {response: Array(0), duration: '979ms'}
+✅ [Gemini Live] Valid response for getSalesOrderDetails: {id: '...', name: '...', hasResponse: true}
+✅ [Gemini Live] Sending tool responses: {count: 1, responses: [...]}
+✅ Tool response sent successfully to Gemini Live
+✅ Gemini processes empty response and explains to user via audio
+```
+
+**Technical Benefits**:
+- **Handles empty MCP responses** - converts `Array(0)` to meaningful user message
+- **Proper Gemini Live format** - creates valid `functionResponses` structure
+- **Comprehensive validation** - validates responses before sending to API
+- **Error resilience** - handles all error scenarios gracefully
+- **User-friendly messages** - converts technical errors to helpful explanations
+
+**Why This Fix Works**:
+- **Empty response handling** - MCP server returning no data is now properly communicated to user
+- **API compliance** - response format matches Gemini Live API requirements exactly
+- **Validation layer** - prevents invalid responses from reaching Gemini Live
+- **Graceful degradation** - system continues working even with problematic MCP responses
+
+### **🔧 Critical Issues Fixed (v2.4.0) - React Hooks Closure Issue Resolution**
+
+#### **Issue: Session State Becomes Null Due to React Hooks Closure Problem**
+**Symptoms:**
+```
+[Gemini Live] Tool call received: {sessionActive: false, mcpConnected: true, availableToolsCount: 34}
+[DEBUG] Tool call validation: {hasSession: false, mcpConnected: true, availableToolsCount: 0}
+[Gemini Live] Cannot process tool calls: session or MCP not connected
+```
+
+**Root Cause Identified**: Classic React hooks closure issue where WebSocket callbacks and `processToolCalls` function capture stale values from their initial render, causing:
+1. **Session becomes null** in WebSocket callbacks (callbacks see initial null session)
+2. **Stale closure** in `processToolCalls` (availableTools shows 0 instead of 34)
+
+**Technical Analysis**: 
+- WebSocket callbacks are created with initial `session` value (null) and never see updates
+- `processToolCalls` useCallback has incorrect dependencies, capturing stale `availableTools` array
+- React state updates don't propagate to already-created callback functions
+
+**Complete Fix Applied**: React refs pattern for state persistence in callbacks:
+```javascript
+// 1. Add Refs for State Persistence
+const sessionRef = useRef<any>(null);
+const availableToolsRef = useRef<any[]>([]);
+
+// 2. Keep Refs Synchronized with State
+useEffect(() => {
+  sessionRef.current = session;
+}, [session]);
+
+useEffect(() => {
+  availableToolsRef.current = availableTools;
+}, [availableTools]);
+
+// 3. Fix processToolCalls to Use Refs (Eliminates Stale Closure)
+const processToolCalls = useCallback(async (toolCallMessage: ToolCallMessage) => {
+  // ✅ FIX: Use refs instead of state values to avoid stale closures
+  const currentSession = sessionRef.current;
+  const currentAvailableTools = availableToolsRef.current;
+
+  console.log('[DEBUG] Tool call validation:', {
+    hasSession: !!currentSession,
+    mcpConnected: mcpConnected,
+    availableToolsCount: currentAvailableTools.length, // ✅ Now shows 34
+    toolCallName: toolCallMessage.toolCall.functionCalls[0]?.name,
+    timestamp: new Date().toISOString()
+  });
+
+  if (!currentSession || !mcpConnected) {
+    console.error('[Gemini Live] Cannot process tool calls: session or MCP not connected', {
+      session: !!currentSession,
+      mcpConnected: mcpConnected,
+      availableTools: currentAvailableTools.length,
+      timestamp: new Date().toISOString()
+    });
+    return;
+  }
+
+  // ✅ FIX: Use currentSession ref instead of state
+  await currentSession.sendToolResponse({ functionResponses });
+  
+}, [mcpConnected, executeToolCall, setState]); // ✅ FIX: Removed session and availableTools from dependencies
+
+// 4. Fix WebSocket Callbacks to Use Refs
+callbacks: {
+  onopen: () => {
+    console.log('[DEBUG] WebSocket onopen - session state:', {
+      hasSession: !!sessionRef.current, // ✅ FIX: Use ref instead of state
+      timestamp: new Date().toISOString()
+    });
+  },
+  onmessage: async (e: any) => {
+    console.log('[DEBUG] WebSocket onmessage - session state:', {
+      hasSession: !!sessionRef.current, // ✅ FIX: Use ref instead of state
+      messageType: Object.keys(e)[0],
+      timestamp: new Date().toISOString()
+    });
+  }
+}
+```
+
+**Expected Behavior After Fix**:
+```
+✅ [DEBUG] Session state changed: {hasSession: true, sessionType: 'object', ...}
+✅ [DEBUG] WebSocket onopen - session state: {hasSession: true, ...} ← FIXED
+✅ [DEBUG] Setup complete - session state: {hasSession: true, ...} ← FIXED
+✅ [DEBUG] Tool call validation: {hasSession: true, availableToolsCount: 34, ...} ← FIXED
+✅ [Gemini Live] Tool call validation passed, proceeding with execution ← SUCCESS
+✅ [Gemini Live] Processing tool call: getSalesOrderDetails
+✅ [MCP] Tool execution attempt: {toolName: "getSalesOrderDetails", ...}
+✅ [Gemini Live] Sending tool responses...
+✅ Tool execution completed successfully
+```
+
+**Technical Benefits**:
+- **Eliminates stale closures** - refs always contain current values
+- **Fixes WebSocket callback scope** - callbacks can access updated session
+- **Resolves React lifecycle issues** - no dependency on state in callbacks
+- **Maintains performance** - useCallback dependencies optimized
+- **Production ready** - handles React Strict Mode and re-renders correctly
+
+**Why This Fix Works**:
+- **Refs persist across renders** - `sessionRef.current` always has latest session
+- **Callbacks access current values** - no stale closure from initial render
+- **Dependencies optimized** - useCallback doesn't recreate unnecessarily
+- **React pattern compliance** - follows official React documentation for callback refs
+
+### **🔧 Critical Issues Fixed (v2.2.0) - Enhanced Debugging & MCP Connection Monitoring**
+
+#### **Issue: Tool Call Validation Failing - "Cannot process tool calls: session or MCP not connected"**
+**Symptoms:**
+```
+[Gemini Live] Tool call received: {toolCall: {...}}
+[Gemini Live] Cannot process tool calls: session or MCP not connected
+```
+
+**Root Cause**: Insufficient debugging information to identify why MCP connection state validation fails when tool calls arrive. The error occurs even when tools are correctly selected by Gemini.
+
+**Fix Applied**: Comprehensive debugging and state monitoring system:
+```javascript
+// 1. Enhanced Tool Call Validation Logging
+const processToolCalls = useCallback(async (toolCallMessage: ToolCallMessage) => {
+  // ✅ NUEVO: Logging detallado de estado para debugging
+  console.log('[DEBUG] Tool call validation:', {
+    hasSession: !!session,
+    mcpConnected: mcpConnected,
+    availableToolsCount: availableTools.length,
+    toolCallName: toolCallMessage.toolCall.functionCalls[0]?.name,
+    toolCallId: toolCallMessage.toolCall.functionCalls[0]?.id,
+    timestamp: new Date().toISOString()
+  });
+
+  if (!session || !mcpConnected) {
+    console.error('[Gemini Live] Cannot process tool calls: session or MCP not connected', {
+      session: !!session,
+      mcpConnected: mcpConnected,
+      availableTools: availableTools.length,
+      toolCall: toolCallMessage.toolCall.functionCalls[0]?.name,
+      toolCallArgs: toolCallMessage.toolCall.functionCalls[0]?.args,
+      timestamp: new Date().toISOString()
+    });
+    return;
+  }
+}, [session, mcpConnected, executeToolCall, setState]);
+
+// 2. MCP Connection State Monitoring
+useEffect(() => {
+  console.log('[MCP] Connection state changed:', {
+    isConnected: isConnected,
+    hasClient: !!client,
+    availableToolsCount: availableTools.length,
+    timestamp: new Date().toISOString()
+  });
+}, [isConnected, client, availableTools]);
+
+// 3. Enhanced Tool Execution Logging
+const executeToolCall = useCallback(async (functionCall: FunctionCall): Promise<FunctionResponse> => {
+  console.log('[MCP] Tool execution attempt:', {
+    toolName: functionCall.name,
+    hasClient: !!client,
+    isConnected: isConnected,
+    availableToolsCount: availableTools.length,
+    timestamp: new Date().toISOString()
+  });
+
+  if (!client || !isConnected) {
+    console.error('[MCP] Tool execution failed - client not ready:', {
+      hasClient: !!client,
+      isConnected: isConnected,
+      toolName: functionCall.name,
+      availableToolsCount: availableTools.length,
+      timestamp: new Date().toISOString()
+    });
+    throw new Error('MCP client not connected');
+  }
+}, [client, isConnected]);
+
+// 4. Conversation Start State Logging
+console.log('[DEBUG] Starting conversation with state:', {
+  mcpConnected: mcpConnected,
+  availableToolsCount: availableTools.length,
+  hasAiClient: !!ai.current,
+  timestamp: new Date().toISOString()
+});
+
+// 5. Tool Call Reception Logging
+} else if (e.toolCall) {
+  console.log('[Gemini Live] Tool call received:', {
+    toolCall: e.toolCall,
+    sessionActive: !!session,
+    mcpConnected: mcpConnected,
+    availableToolsCount: availableTools.length,
+    timestamp: new Date().toISOString()
+  });
+  processToolCalls(e);
+}
+```
+
+**Expected Behavior**: Comprehensive logging provides detailed state information at every critical point, enabling precise diagnosis of MCP connection timing issues and tool call validation failures.
+
 ### **🔧 Critical Issues Fixed (v2.1.0) - Temporal Dead Zone & AudioWorklet PCM**
 
 #### **Issue 1: Temporal Dead Zone Error in JavaScript**

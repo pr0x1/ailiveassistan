@@ -136,7 +136,23 @@ export const useMcpClient = (): UseMcpClientReturn => {
    * Execute a tool call via MCP server
    */
   const executeToolCall = useCallback(async (functionCall: FunctionCall): Promise<FunctionResponse> => {
+    // ✅ NUEVO: Logging detallado antes de ejecutar tool
+    console.log('[MCP] Tool execution attempt:', {
+      toolName: functionCall.name,
+      hasClient: !!client,
+      isConnected: isConnected,
+      availableToolsCount: availableTools.length,
+      timestamp: new Date().toISOString()
+    });
+
     if (!client || !isConnected) {
+      console.error('[MCP] Tool execution failed - client not ready:', {
+        hasClient: !!client,
+        isConnected: isConnected,
+        toolName: functionCall.name,
+        availableToolsCount: availableTools.length,
+        timestamp: new Date().toISOString()
+      });
       throw new Error('MCP client not connected');
     }
 
@@ -201,6 +217,18 @@ export const useMcpClient = (): UseMcpClientReturn => {
       disconnect();
     };
   }, []); // Empty dependency array to prevent multiple connections
+
+  /**
+   * Monitor connection state changes for debugging
+   */
+  useEffect(() => {
+    console.log('[MCP] Connection state changed:', {
+      isConnected: isConnected,
+      hasClient: !!client,
+      availableToolsCount: availableTools.length,
+      timestamp: new Date().toISOString()
+    });
+  }, [isConnected, client, availableTools]);
 
   /**
    * Handle connection errors and reconnection
