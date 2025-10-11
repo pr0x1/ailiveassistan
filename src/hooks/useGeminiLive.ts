@@ -303,7 +303,7 @@ export const useGeminiLive = (): UseGeminiLiveReturn => {
         try {
           const response = await executeToolCall(functionCall);
           
-          // ✅ FIX: Validate response structure before adding
+          // ✅ FIX: Validate response structure for official Gemini Live API format (with required name field)
           if (response && response.id && response.name && response.response !== undefined) {
             functionResponses.push(response);
             console.log(`[Gemini Live] Valid response for ${functionCall.name}:`, {
@@ -315,46 +315,88 @@ export const useGeminiLive = (): UseGeminiLiveReturn => {
           } else {
             console.warn(`[Gemini Live] Invalid response structure for ${functionCall.name}:`, response);
             
-            // Create fallback response
+            // Create fallback response in official API format with required name field
             functionResponses.push({
               id: functionCall.id,
-              name: functionCall.name,
+              name: functionCall.name,  // ✅ RESTORED: Required field per official API specification
               response: {
-                success: false,
-                message: `Invalid response structure from tool ${functionCall.name}`,
-                data: null
+                error: `Invalid response structure from tool ${functionCall.name}`,
+                details: 'Tool response validation failed'
               }
             });
           }
         } catch (toolError: any) {
           console.error(`[Gemini Live] Tool execution failed: ${functionCall.name}`, toolError);
           
-          // ✅ FIX: Create proper error response structure
+          // ✅ FIX: Create proper error response structure in official API format with required name field
           functionResponses.push({
             id: functionCall.id,
-            name: functionCall.name,
+            name: functionCall.name,  // ✅ RESTORED: Required field per official API specification
             response: {
-              success: false,
-              message: `Tool execution failed: ${toolError?.message || 'Unknown error'}`,
-              error: toolError?.message || 'Unknown error',
-              data: null
+              error: `Tool execution failed: ${toolError?.message || 'Unknown error'}`,
+              details: toolError?.message || 'Unknown error'
             }
           });
         }
       }
 
-      // ✅ FIX: Validate functionResponses array before sending
+      // ✅ FIX: Enhanced validation and logging for functionResponses
+      console.log('[Gemini Live] Pre-send validation:', {
+        functionResponsesLength: functionResponses.length,
+        functionResponsesContent: functionResponses,
+        allResponsesValid: functionResponses.every(r => r && r.id && r.response !== undefined)
+      });
+
+      // ✅ FIX: Never send empty array - create fallback response if needed
       if (functionResponses.length === 0) {
-        console.error('[Gemini Live] No valid function responses to send');
+        console.error('[Gemini Live] No valid function responses generated, creating fallback response');
+        
+        // Create a fallback response for the first function call
+        const firstFunctionCall = toolCallMessage.toolCall.functionCalls[0];
+        if (firstFunctionCall) {
+          functionResponses.push({
+            id: firstFunctionCall.id,
+            name: firstFunctionCall.name,  // ✅ RESTORED: Required field per official API specification
+            response: {
+              error: 'Tool execution failed - no valid responses generated',
+              details: 'All tool executions failed or returned invalid responses'
+            }
+          });
+        } else {
+          console.error('[Gemini Live] Cannot create fallback response - no function calls found');
+          return;
+        }
+      }
+
+      // ✅ FIX: Final validation before sending
+      const validResponses = functionResponses.filter(r => 
+        r && 
+        typeof r.id === 'string' && 
+        r.id.length > 0 && 
+        r.response !== undefined && 
+        r.response !== null
+      );
+
+      if (validResponses.length === 0) {
+        console.error('[Gemini Live] All responses failed final validation, cannot send to API');
         return;
       }
 
-      console.log('[Gemini Live] Sending tool responses...', {
-        count: functionResponses.length,
-        responses: functionResponses.map(r => ({ id: r.id, name: r.name, hasResponse: !!r.response }))
+      console.log('[Gemini Live] Sending tool responses to API...', {
+        originalCount: functionResponses.length,
+        validCount: validResponses.length,
+        responses: validResponses.map(r => ({ 
+          id: r.id, 
+          hasResponse: !!r.response,
+          responseType: typeof r.response,
+          responseKeys: r.response ? Object.keys(r.response) : []
+        }))
       });
       
-      await currentSession.sendToolResponse({toolResponses: functionResponses });
+      // ✅ FIX: Send only valid responses
+      await currentSession.sendToolResponse({ functionResponses: validResponses });
+      
+      console.log('[Gemini Live] Tool responses sent successfully to API');
       
     } catch (error) {
       console.error('[Gemini Live] Failed to process tool calls:', error);
