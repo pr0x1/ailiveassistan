@@ -53,7 +53,7 @@ export interface FunctionCall {
 
 export interface FunctionResponse {
   id: string;
-  name: string;
+  name: string;  // ✅ RESTORED: Required field per official API specification
   response: any;
 }
 

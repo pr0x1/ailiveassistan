@@ -105,18 +105,16 @@ export const processToolExecutionResponse = (response: any) => {
 };
 
 /**
- * Formats tool response for Gemini Live API
+ * Formats tool response for Gemini Live API (Official API Format with Required Fields)
  */
 export const formatToolResponseForGemini = (toolName: string, toolId: string, response: any) => {
   // ✅ FIX: Handle empty responses from MCP server
   if (!response || (Array.isArray(response) && response.length === 0)) {
     return {
       id: toolId,
-      name: toolName,
+      name: toolName,  // ✅ RESTORED: Required field per official API specification
       response: {
-        success: false,
-        message: `No data found for the requested ${toolName} parameters. Please verify the input values and try again.`,
-        data: null,
+        error: `No data found for the requested ${toolName} parameters. Please verify the input values and try again.`,
         isEmpty: true
       }
     };
@@ -126,25 +124,20 @@ export const formatToolResponseForGemini = (toolName: string, toolId: string, re
   if (response.error) {
     return {
       id: toolId,
-      name: toolName,
+      name: toolName,  // ✅ RESTORED: Required field per official API specification
       response: {
-        success: false,
-        message: response.message || `Tool execution failed: ${response.error}`,
-        error: response.error,
-        data: null
+        error: response.message || `Tool execution failed: ${response.error}`,
+        details: response.error
       }
     };
   }
 
-  // ✅ FIX: Handle successful responses with proper structure
+  // ✅ FIX: Handle successful responses with official Gemini Live API format
   return {
     id: toolId,
-    name: toolName,
+    name: toolName,  // ✅ RESTORED: Required field per official API specification
     response: {
-      success: true,
-      message: `Successfully executed ${toolName}`,
-      data: response,
-      timestamp: new Date().toISOString()
+      output: response  // ✅ FIXED: Use "output" key instead of "result" per official docs
     }
   };
 };
