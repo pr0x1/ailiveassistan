@@ -20,6 +20,7 @@ import { useAudioState } from './useAudioState';
  * Now using AudioWorklet for proper PCM audio processing
  */
 export const useGeminiLive = (): UseGeminiLiveReturn => {
+  const isProcessingTool = useRef<boolean>(false);
   const [session, setSession] = useState<any | null>(null);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [error, setError] = useState<AppError | null>(null);
@@ -302,10 +303,23 @@ export const useGeminiLive = (): UseGeminiLiveReturn => {
         
         try {
           const response = await executeToolCall(functionCall);
-          
+          //console.log('[DEBUG] STRINGIFIED original response.response:', JSON.stringify(response.response, null, 2));
           // ✅ FIX: Validate response structure for official Gemini Live API format (with required name field)
           if (response && response.id && response.name && response.response !== undefined) {
-            functionResponses.push(response);
+            //functionResponses.push(response);
+              const testPayload = {
+                 status: "SUCCESS",
+                 message: `Test response for tool ${response.name}.`,
+                 timestamp: new Date().toISOString()
+          };
+          console.log('[DEBUG] Sending HARDCODED test payload:', testPayload);
+            functionResponses.push({
+                  id: response.id,
+                  name: response.name,
+                 // response: response.response
+                 response: testPayload
+          });  
+            console.log(`[Gemini Live] Sanitized and valid response for ${functionCall.name} was ADDED.`) 
             console.log(`[Gemini Live] Valid response for ${functionCall.name}:`, {
               id: response.id,
               name: response.name,
@@ -377,9 +391,21 @@ export const useGeminiLive = (): UseGeminiLiveReturn => {
         r.response !== null
       );
 
+      // ✅ CRITICAL FIX: Ensure functionResponses is NEVER zero or null
       if (validResponses.length === 0) {
-        console.error('[Gemini Live] All responses failed final validation, cannot send to API');
-        return;
+        console.error('[Gemini Live] All responses failed final validation, creating emergency fallback');
+        
+        // ✅ GUARANTEE: Always send at least 1 valid response to prevent "functionResponses is required" error
+        const emergencyResponse = {
+          id: toolCallMessage.toolCall.functionCalls[0]?.id || `fallback-${Date.now()}`,
+          name: toolCallMessage.toolCall.functionCalls[0]?.name || 'unknown_tool',
+          response: {
+            result: "Tool execution completed with validation errors. Please check the tool configuration and try again."
+          }
+        };
+        
+        validResponses.push(emergencyResponse);
+        console.log('[Gemini Live] Emergency fallback response created:', emergencyResponse);
       }
 
       console.log('[Gemini Live] Sending tool responses to API...', {
@@ -392,8 +418,10 @@ export const useGeminiLive = (): UseGeminiLiveReturn => {
           responseKeys: r.response ? Object.keys(r.response) : []
         }))
       });
-      
-      // ✅ FIX: Send only valid responses
+      validResponses.forEach(r => {
+        console.log(`[Gemini Live] Tool response sent to API:`, r.id,r.name,r.response);
+      });
+      // ✅ GUARANTEED: validResponses.length is always >= 1
       await currentSession.sendToolResponse({ functionResponses: validResponses });
       
       console.log('[Gemini Live] Tool responses sent successfully to API');
@@ -471,7 +499,8 @@ export const useGeminiLive = (): UseGeminiLiveReturn => {
       console.log('[Gemini Live] Connecting to Gemini Live API...');
       
       const liveSession = await ai.current.live.connect({
-        model: 'gemini-2.5-flash-native-audio-preview-09-2025',
+       model: 'gemini-2.5-flash-native-audio-preview-09-2025',
+       // model: 'gemini-live-2.5-flash-preview',
         config: {
           responseModalities: [Modality.AUDIO],
           systemInstruction: {
@@ -510,7 +539,7 @@ export const useGeminiLive = (): UseGeminiLiveReturn => {
                 // TODO: Update UI with real-time user transcription
                 setState('LISTENING');
               }
-
+              
               // Handle output transcriptions (Gemini speaking)
               if (e.serverContent.outputTranscription) {
                 console.log('[Gemini Live] Output transcription:', e.serverContent.outputTranscription.text);
@@ -558,7 +587,7 @@ export const useGeminiLive = (): UseGeminiLiveReturn => {
               }
               
               // Return to listening after speaking
-              if (e.serverContent.turnComplete) {
+              if (e.serverContent.turnComplete && !isProcessingTool.current) { //Gemini modified
                 console.log('[Gemini Live] Turn complete, returning to listening');
                 setTimeout(() => setState('LISTENING'), 1000);
               }
@@ -581,8 +610,21 @@ export const useGeminiLive = (): UseGeminiLiveReturn => {
                 availableToolsCount: availableTools.length,
                 timestamp: new Date().toISOString()
               });
-              // ✅ FIX: Pass liveSession directly from closure to eliminate race condition
-              processToolCalls(e, liveSession);
+              isProcessingTool.current = true;//Gemini modified
+               console.log('[Gemini Live] Tool processing STARTED, flag set to true.');//Gemini modified
+              // ✅ CRITICAL FIX: Await async processToolCalls (Official Gemini Live pattern)
+
+              //await processToolCalls(e, liveSession);
+              if (sessionRef.current) {
+                 await processToolCalls(e, sessionRef.current);
+              } else {
+                console.error('[Gemini Live] CRITICAL: sessionRef is null when tool call was received. Aborting.');
+              }
+              
+                 isProcessingTool.current = false; //Gemini modified
+                console.log('[Gemini Live] Tool processing FINISHED, flag set to false.');//Gemini modified
+                // Como el 'turnComplete' pudo haber llegado antes, volvemos a escuchar aquí.
+                 setState('LISTENING'); //Gemini modified
             } else if (e.setupComplete) {
               console.log('[DEBUG] Setup complete - session state:', {
                 hasSession: !!session,

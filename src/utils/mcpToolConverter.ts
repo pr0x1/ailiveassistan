@@ -105,7 +105,7 @@ export const processToolExecutionResponse = (response: any) => {
 };
 
 /**
- * Formats tool response for Gemini Live API (Official API Format with Required Fields)
+ * Formats tool response for Gemini Live API (Official Google Documentation Format)
  */
 export const formatToolResponseForGemini = (toolName: string, toolId: string, response: any) => {
   // ✅ FIX: Handle empty responses from MCP server
@@ -114,8 +114,7 @@ export const formatToolResponseForGemini = (toolName: string, toolId: string, re
       id: toolId,
       name: toolName,  // ✅ RESTORED: Required field per official API specification
       response: {
-        error: `No data found for the requested ${toolName} parameters. Please verify the input values and try again.`,
-        isEmpty: true
+        result: `No data found for the requested ${toolName} parameters. Please verify the input values and try again.`
       }
     };
   }
@@ -126,18 +125,17 @@ export const formatToolResponseForGemini = (toolName: string, toolId: string, re
       id: toolId,
       name: toolName,  // ✅ RESTORED: Required field per official API specification
       response: {
-        error: response.message || `Tool execution failed: ${response.error}`,
-        details: response.error
+        result: `Tool execution failed: ${response.message || response.error}`
       }
     };
   }
 
-  // ✅ FIX: Handle successful responses with official Gemini Live API format
+  // ✅ FIX: Handle successful responses with official Google documentation format
   return {
     id: toolId,
     name: toolName,  // ✅ RESTORED: Required field per official API specification
     response: {
-      output: response  // ✅ FIXED: Use "output" key instead of "result" per official docs
+      result: response  // ✅ OFFICIAL FORMAT: Simple "result" key as shown in Google docs
     }
   };
 };

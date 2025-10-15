@@ -1,0 +1,585 @@
+import { GoogleGenAI } from '@google/genai';
+        // ⚠️ REPLACE WITH YOUR ACTUAL API KEY
+        const apiKey = "AIzaSyDZd-Nyx0V1jtckafUvPdPIxtQ_ujKglS8";
+        
+        const logElement = document.getElementById('log');
+        const statusElement = document.getElementById('status');
+        const audioInfoElement = document.getElementById('audioInfo');
+        const startButton = document.getElementById('startButton');
+        const stopButton = document.getElementById('stopButton');
+        
+        let session = null;
+        let logCount = 0;
+        let currentState = 'IDLE';
+        
+        // Audio components (like main app)
+        let mediaStream = null;
+        let inputAudioContext = null;
+        let outputAudioContext = null;
+        let audioWorkletNode = null;
+        let outputSources = new Set();
+        let nextStartTime = 0;
+
+        // AudioWorklet Processor (inline, like main app)
+        const audioProcessorCode = `
+        /**
+         * AudioWorkletProcessor for real-time audio capture
+         * Same as main application's audio-processor.js
+         */
+        class AudioCaptureProcessor extends AudioWorkletProcessor {
+          constructor() {
+            super();
+            
+            this.port.onmessage = (event) => {
+              if (event.data.type === 'configure') {
+                console.log('[AudioWorklet] Processor configured');
+              }
+            };
+            
+            console.log('[AudioWorklet] AudioCaptureProcessor initialized');
+          }
+
+          process(inputs, outputs, parameters) {
+            const input = inputs[0];
+            
+            if (input && input.length > 0) {
+              const inputData = input[0]; // First channel (mono)
+              
+              if (inputData && inputData.length > 0) {
+                // Send audio data to main thread
+                this.port.postMessage({
+                  type: 'audioData',
+                  audioData: inputData
+                });
+              }
+            }
+            
+            return true; // Keep processor active
+          }
+        }
+
+        registerProcessor('audio-capture-processor', AudioCaptureProcessor);
+        `;
+
+        function updateStatus(state) {
+            currentState = state;
+            statusElement.textContent = `Status: ${state}`;
+            statusElement.className = `status ${state.toLowerCase()}`;
+            
+            // Update button states
+            startButton.disabled = (state !== 'IDLE');
+            stopButton.disabled = (state === 'IDLE');
+        }
+
+        function updateAudioInfo(info) {
+            audioInfoElement.innerHTML = info;
+        }
+
+        function log(message, type = 'info') {
+            logCount++;
+            const timestamp = new Date().toISOString();
+            const prefix = `[${logCount.toString().padStart(3, '0')}] ${timestamp}`;
+            
+            let logMessage;
+            if (typeof message === 'string') {
+                logMessage = `${prefix} ${message}`;
+            } else {
+                logMessage = `${prefix} ${JSON.stringify(message, null, 2)}`;
+            }
+            
+            console.log(logMessage);
+            
+            const logLine = document.createElement('div');
+            logLine.className = type;
+            logLine.textContent = logMessage + '\n';
+            logElement.appendChild(logLine);
+            logElement.scrollTop = logElement.scrollHeight;
+        }
+
+        // PCM Audio encoding functions (from main app)
+        function encode(bytes) {
+            let binary = '';
+            const len = bytes.byteLength;
+            for (let i = 0; i < len; i++) {
+                binary += String.fromCharCode(bytes[i]);
+            }
+            return btoa(binary);
+        }
+
+        function decode(base64) {
+            const binaryString = atob(base64);
+            const len = binaryString.length;
+            const bytes = new Uint8Array(len);
+            for (let i = 0; i < len; i++) {
+                bytes[i] = binaryString.charCodeAt(i);
+            }
+            return bytes;
+        }
+
+        function createBlob(data) {
+            const l = data.length;
+            const int16 = new Int16Array(l);
+            for (let i = 0; i < l; i++) {
+                int16[i] = data[i] * 32768; // Convert Float32 to Int16
+            }
+            return {
+                data: encode(new Uint8Array(int16.buffer)),
+                mimeType: 'audio/pcm;rate=16000',
+            };
+        }
+
+        // Decode audio data for playback (from main app)
+        async function decodeAudioData(data, ctx, sampleRate, numChannels) {
+            const dataInt16 = new Int16Array(data.buffer);
+            const frameCount = dataInt16.length / numChannels;
+            const buffer = ctx.createBuffer(numChannels, frameCount, sampleRate);
+
+            for (let channel = 0; channel < numChannels; channel++) {
+                const channelData = buffer.getChannelData(channel);
+                for (let i = 0; i < frameCount; i++) {
+                    channelData[i] = dataInt16[i * numChannels + channel] / 32768.0;
+                }
+            }
+            return buffer;
+        }
+
+        // Start audio streaming using AudioWorklet (like main app)
+        async function startAudioStreaming(liveSession) {
+            if (!liveSession) {
+                log('❌ Cannot start audio streaming: no session provided', 'error');
+                return;
+            }
+
+            try {
+                log('🎤 Setting up AudioWorklet-based audio streaming...', 'info');
+                
+                // Create dual AudioContext setup (like main app)
+                inputAudioContext = new (window.AudioContext || window.webkitAudioContext)({
+                    sampleRate: 16000
+                });
+                outputAudioContext = new (window.AudioContext || window.webkitAudioContext)({
+                    sampleRate: 24000
+                });
+                
+                updateAudioInfo(`Input: ${inputAudioContext.sampleRate}Hz, Output: ${outputAudioContext.sampleRate}Hz`);
+
+                // Get microphone stream
+                mediaStream = await navigator.mediaDevices.getUserMedia({ 
+                    audio: {
+                        sampleRate: 16000,
+                        channelCount: 1,
+                        echoCancellation: true,
+                        noiseSuppression: true
+                    }
+                });
+                
+                log('✅ Audio stream obtained', 'success');
+
+                // Create AudioWorklet processor from inline code
+                const blob = new Blob([audioProcessorCode], { type: 'application/javascript' });
+                const processorUrl = URL.createObjectURL(blob);
+                
+                log('🔧 Loading AudioWorklet processor...', 'info');
+                await inputAudioContext.audioWorklet.addModule(processorUrl);
+                
+                // Create AudioWorkletNode
+                audioWorkletNode = new AudioWorkletNode(inputAudioContext, 'audio-capture-processor');
+
+                // Handle audio data from worklet (like main app)
+                audioWorkletNode.port.onmessage = (event) => {
+                    if (event.data.type === 'audioData') {
+                        const inputData = event.data.audioData; // Float32Array
+                        const pcmBlob = createBlob(inputData);
+                        
+                        try {
+                            liveSession.sendRealtimeInput({ media: pcmBlob });
+                            // Log every 100th audio chunk to avoid spam
+                            if (logCount % 100 === 0) {
+                                log(`📡 Audio chunk sent (${inputData.length} samples)`, 'info');
+                            }
+                        } catch (sendError) {
+                            log(`❌ Failed to send PCM audio chunk: ${sendError.message}`, 'error');
+                            
+                            // Check if error indicates connection is closed
+                            const errorMessage = sendError.message || '';
+                            if (errorMessage.includes('CLOSING') || errorMessage.includes('CLOSED') || 
+                                errorMessage.includes('connection') || errorMessage.includes('WebSocket')) {
+                                log('⚠️ Connection appears closed, stopping audio worklet', 'warning');
+                                stopAudioStreaming();
+                            }
+                        }
+                    }
+                };
+
+                // Connect audio pipeline
+                const source = inputAudioContext.createMediaStreamSource(mediaStream);
+                source.connect(audioWorkletNode);
+                
+                log('✅ AudioWorklet audio streaming started', 'success');
+                updateAudioInfo(`Input: ${inputAudioContext.sampleRate}Hz, Output: ${outputAudioContext.sampleRate}Hz - STREAMING`);
+
+                // Clean up blob URL
+                URL.revokeObjectURL(processorUrl);
+
+            } catch (streamError) {
+                log(`❌ Failed to start AudioWorklet streaming: ${streamError.message}`, 'error');
+                log(streamError, 'error');
+            }
+        }
+
+        // Stop audio streaming (like main app)
+        function stopAudioStreaming() {
+            log('🛑 Stopping AudioWorklet audio streaming...', 'info');
+            
+            // Disconnect AudioWorklet
+            if (audioWorkletNode) {
+                audioWorkletNode.disconnect();
+                audioWorkletNode = null;
+            }
+
+            // Stop media stream
+            if (mediaStream) {
+                mediaStream.getTracks().forEach(track => track.stop());
+                mediaStream = null;
+            }
+
+            // Close audio contexts
+            if (inputAudioContext) {
+                inputAudioContext.close().catch(console.error);
+                inputAudioContext = null;
+            }
+
+            if (outputAudioContext) {
+                outputAudioContext.close().catch(console.error);
+                outputAudioContext = null;
+            }
+
+            // Stop output sources
+            if (outputSources) {
+                outputSources.forEach(source => source.stop());
+                outputSources.clear();
+            }
+            
+            nextStartTime = 0;
+            updateAudioInfo('Not initialized');
+
+            log('✅ AudioWorklet audio streaming stopped', 'success');
+        }
+
+        async function startConversation() {
+            if (apiKey === "TU_API_KEY_AQUI") {
+                log('❌ ERROR: Please replace TU_API_KEY_AQUI with your actual Gemini API key!', 'error');
+                return;
+            }
+
+            log('🚀 Starting conversation with full audio support...', 'info');
+            updateStatus('CONNECTING');
+            
+            const ai = new GoogleGenAI({ apiKey });
+
+            // Simple dummy tool with proper structure (same as before)
+            const dummyTool = [{
+                functionDeclarations: [{
+                    name: 'get_weather',
+                    description: 'Get the weather for a location',
+                    parameters: {
+                        type: 'OBJECT',
+                        properties: { 
+                            location: { 
+                                type: 'STRING',
+                                description: 'The location to get weather for'
+                            } 
+                        },
+                        required: ['location'],
+                    },
+                }],
+            }];
+
+            log('🔧 Tool configuration:', 'info');
+            log(dummyTool);
+
+            try {
+                log('🔌 Connecting to Gemini Live API...', 'info');
+                
+                session = await ai.live.connect({
+                    model: 'gemini-2.5-flash-native-audio-preview-09-2025',
+                    config: {
+                        responseModalities: ["AUDIO"],
+                        tools: dummyTool,
+                        systemInstruction: {
+                            parts: [{
+                                text: 'You are a helpful assistant. When asked about weather, use the get_weather tool to get the information. Provide clear, concise audio responses.'
+                            }]
+                        }
+                    },
+                    callbacks: {
+                        onopen: () => {
+                            log('✅ Connection OPENED successfully', 'success');
+                            updateStatus('LISTENING');
+                        },
+                        onclose: (event) => {
+                            log(`🔌 Connection CLOSED: ${event.reason || 'Unknown reason'}`, 'info');
+                            updateStatus('IDLE');
+                            stopAudioStreaming();
+                        },
+                        onerror: (err) => {
+                            log(`❌ Connection ERROR: ${err.message || err}`, 'error');
+                            updateStatus('ERROR');
+                            stopAudioStreaming();
+                        },
+                        onmessage: async (msg) => {
+                            log('📨 Received message:', 'info');
+                            log(msg);
+
+                            // Handle server content (transcriptions, audio, etc.)
+                            if (msg.serverContent) {
+                                // Handle input transcriptions (user speaking)
+                                if (msg.serverContent.inputTranscription) {
+                                    log(`🎤 User said: "${msg.serverContent.inputTranscription.text}"`, 'info');
+                                    updateStatus('PROCESSING');
+                                }
+                                
+                                // Handle output transcriptions (Gemini speaking)
+                                if (msg.serverContent.outputTranscription) {
+                                    log(`🤖 Gemini said: "${msg.serverContent.outputTranscription.text}"`, 'success');
+                                    updateStatus('SPEAKING');
+                                }
+
+                                // Handle audio responses from Gemini (like main app)
+                                if (msg.serverContent.modelTurn?.parts) {
+                                    for (const part of msg.serverContent.modelTurn.parts) {
+                                        if (part.inlineData?.data) {
+                                            // Play audio response
+                                            if (outputAudioContext) {
+                                                try {
+                                                    nextStartTime = Math.max(nextStartTime, outputAudioContext.currentTime);
+                                                    const audioBuffer = await decodeAudioData(
+                                                        decode(part.inlineData.data),
+                                                        outputAudioContext,
+                                                        24000,
+                                                        1,
+                                                    );
+                                                    const source = outputAudioContext.createBufferSource();
+                                                    source.buffer = audioBuffer;
+                                                    source.connect(outputAudioContext.destination);
+                                                    source.addEventListener('ended', () => {
+                                                        outputSources.delete(source);
+                                                    });
+                                                    source.start(nextStartTime);
+                                                    nextStartTime += audioBuffer.duration;
+                                                    outputSources.add(source);
+                                                    log(`🔊 Playing audio response (${audioBuffer.duration.toFixed(2)}s)`, 'success');
+                                                } catch (audioError) {
+                                                    log(`❌ Failed to play audio response: ${audioError.message}`, 'error');
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                                
+                                // Return to listening after speaking
+                                if (msg.serverContent.turnComplete) {
+                                    log('✅ Turn complete, returning to listening', 'success');
+                                    setTimeout(() => updateStatus('LISTENING'), 1000);
+                                }
+
+                                // Handle interruptions
+                                if (msg.serverContent.interrupted) {
+                                    log('⚠️ Audio interrupted, stopping playback', 'warning');
+                                    outputSources.forEach(source => {
+                                        source.stop();
+                                        outputSources.delete(source);
+                                    });
+                                    nextStartTime = 0;
+                                }
+                            }
+
+                            // ✅ ENHANCED TOOL CALL HANDLING (same as before but with better logging)
+                            if (msg.toolCall) {
+                                log('🛠️ === TOOL CALL DETECTED ===', 'info');
+                                updateStatus('PROCESSING');
+                                log('Tool call details:', 'info');
+                                log(msg.toolCall);
+                                
+                                if (msg.toolCall.functionCalls && msg.toolCall.functionCalls.length > 0) {
+                                    log(`📞 Function calls count: ${msg.toolCall.functionCalls.length}`, 'info');
+                                    
+                                    for (let i = 0; i < msg.toolCall.functionCalls.length; i++) {
+                                        const functionCall = msg.toolCall.functionCalls[i];
+                                        log(`📞 Function call ${i + 1}:`, 'info');
+                                        log({
+                                            id: functionCall.id,
+                                            name: functionCall.name,
+                                            args: functionCall.args
+                                        });
+                                    }
+
+                                    try {
+                                        // Create robust tool response (same as before)
+                                        const functionResponses = msg.toolCall.functionCalls.map(functionCall => ({
+                                            id: functionCall.id,
+                                            name: functionCall.name,
+                                            response: { 
+                                                result: `Weather in ${functionCall.args?.location || 'unknown location'}: Sunny, 67°C. This is a hardcoded test response from the MRE.`,
+                                                timestamp: new Date().toISOString(),
+                                                source: 'MRE-hardcoded'
+                                            }
+                                        }));
+
+                                        const toolResponse = { functionResponses };
+                                        
+                                        log('📤 === SENDING TOOL RESPONSE ===', 'info');
+                                        log('Tool response structure:', 'info');
+                                        log(toolResponse);
+                                        
+                                        // Validation (same as before)
+                                        log('🔍 Validating tool response structure...', 'info');
+                                        
+                                        if (!toolResponse.functionResponses) {
+                                            throw new Error('functionResponses is missing');
+                                        }
+                                        
+                                        if (!Array.isArray(toolResponse.functionResponses)) {
+                                            throw new Error('functionResponses is not an array');
+                                        }
+                                        
+                                        if (toolResponse.functionResponses.length === 0) {
+                                            throw new Error('functionResponses array is empty');
+                                        }
+                                        
+                                        for (const response of toolResponse.functionResponses) {
+                                            if (!response.id) throw new Error('Response missing id field');
+                                            if (!response.name) throw new Error('Response missing name field');
+                                            if (!response.response) throw new Error('Response missing response field');
+                                        }
+                                        
+                                        log('✅ Tool response validation passed', 'success');
+                                        
+                                        // Send tool response
+                                        await session.sendToolResponse(toolResponse);
+                                        log('✅ Tool response sent SUCCESSFULLY!', 'success');
+                                        
+                                    } catch (error) {
+                                        log('❌ === TOOL RESPONSE FAILED ===', 'error');
+                                        log(`Error message: ${error.message}`, 'error');
+                                        log(`Error stack: ${error.stack}`, 'error');
+                                        log('Full error object:', 'error');
+                                        log(error);
+                                        
+                                        // Emergency fallback (same as before)
+                                        try {
+                                            log('🚨 Attempting emergency fallback response...', 'warning');
+                                            const emergencyResponse = {
+                                                functionResponses: [{
+                                                    id: msg.toolCall.functionCalls[0]?.id || `fallback-${Date.now()}`,
+                                                    name: msg.toolCall.functionCalls[0]?.name || 'get_weather',
+                                                    response: { 
+                                                        result: 'Emergency fallback response due to error.',
+                                                        error: error.message,
+                                                        timestamp: new Date().toISOString()
+                                                    }
+                                                }]
+                                            };
+                                            
+                                            log('Emergency response:', 'warning');
+                                            log(emergencyResponse);
+                                            
+                                            await session.sendToolResponse(emergencyResponse);
+                                            log('✅ Emergency fallback response sent successfully!', 'success');
+                                            
+                                        } catch (fallbackError) {
+                                            log('❌ Emergency fallback also failed:', 'error');
+                                            log(fallbackError);
+                                        }
+                                    }
+                                } else {
+                                    log('⚠️ Tool call received but no function calls found', 'warning');
+                                    log('Tool call structure:', 'warning');
+                                    log(msg.toolCall);
+                                }
+                            }
+                            
+                            if (msg.setupComplete) {
+                                log('⚙️ Setup completed', 'success');
+                            }
+                        }
+                    }
+                });
+
+                log('✅ Session created successfully', 'success');
+                
+                // Start audio streaming AFTER session is available (like main app)
+                log('🎤 Starting AudioWorklet audio streaming...', 'info');
+                await startAudioStreaming(session);
+
+            } catch (error) {
+                log('❌ === FAILED TO START CONVERSATION ===', 'error');
+                log(`Error message: ${error.message}`, 'error');
+                log(`Error stack: ${error.stack}`, 'error');
+                log('Full error object:', 'error');
+                log(error);
+                updateStatus('ERROR');
+            }
+        }
+
+        function stopConversation() {
+            log('🛑 Stopping conversation...', 'info');
+            updateStatus('IDLE');
+            
+            // Stop audio streaming
+            stopAudioStreaming();
+            
+            // Close session
+            if (session) {
+                try {
+                    // Signal audio stream end (like main app)
+                    session.sendRealtimeInput({ audioStreamEnd: true });
+                    session.close();
+                    log('✅ Session closed successfully', 'success');
+                } catch (closeError) {
+                    log(`⚠️ Error closing session: ${closeError.message}`, 'warning');
+                }
+                session = null;
+            }
+        }
+
+        function sendTestMessage() {
+            if (!session) {
+                log('⚠️ No active session for test message', 'warning');
+                return;
+            }
+
+            const testMessage = "What is the weather in Paris?";
+            log(`📝 Sending test message: "${testMessage}"`, 'info');
+            
+            try {
+                session.sendClientContent({
+                    turns: [{
+                        role: 'user',
+                        parts: [{ text: testMessage }]
+                    }],
+                    turnComplete: true
+                });
+                updateStatus('PROCESSING');
+            } catch (error) {
+                log(`❌ Failed to send test message: ${error.message}`, 'error');
+            }
+        }
+
+        function clearLog() {
+            logElement.innerHTML = '';
+            logCount = 0;
+            log('🧹 Log cleared', 'info');
+        }
+
+        // Event listeners
+        startButton.onclick = startConversation;
+        stopButton.onclick = stopConversation;
+        document.getElementById('clearLog').onclick = clearLog;
+        document.getElementById('testMessage').onclick = sendTestMessage;
+
+        // Initial log
+        log('🎯 Gemini Live ToolCall Bug MRE with Full Audio loaded', 'success');
+        log('📋 Ready to test tool call functionality with real audio streaming', 'info');
+        log('🎤 This MRE includes: AudioWorklet, PCM conversion, dual AudioContext, and tool calls', 'info');
+   
