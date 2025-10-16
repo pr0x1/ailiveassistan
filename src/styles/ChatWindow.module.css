@@ -75,6 +75,10 @@
   justify-content: flex-start;
 }
 
+.systemMessage {
+  justify-content: center;
+}
+
 .messageContent {
   max-width: 70%;
   padding: 0.75rem 1rem;
@@ -94,6 +98,53 @@
   color: #333;
   border: 1px solid #e9ecef;
   border-bottom-left-radius: 4px;
+}
+
+.systemMessage .messageContent {
+  background: #fff3cd;
+  color: #856404;
+  border: 1px solid #ffeaa7;
+  border-radius: 8px;
+  max-width: 80%;
+  font-size: 0.9rem;
+  text-align: center;
+}
+
+.toolName {
+  font-weight: 500;
+  color: #6c757d;
+}
+
+.toolData {
+  margin-top: 0.5rem;
+  padding-top: 0.5rem;
+  border-top: 1px solid rgba(133, 100, 4, 0.2);
+}
+
+.toolDetails {
+  cursor: pointer;
+}
+
+.toolDetails summary {
+  font-size: 0.8rem;
+  color: #6c757d;
+  margin-bottom: 0.5rem;
+}
+
+.toolDataContent {
+  background: rgba(0, 0, 0, 0.05);
+  padding: 0.5rem;
+  border-radius: 4px;
+  font-size: 0.75rem;
+  max-height: 200px;
+  overflow-y: auto;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+.systemMessage .messageTime {
+  color: #856404;
+  text-align: center;
 }
 
 .messageText {

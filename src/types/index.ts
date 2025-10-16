@@ -7,9 +7,12 @@ export type VoiceOption = 'Zephyr' | 'Puck' | 'Charon' | 'Kore' | 'Fenrir' | 'Le
 // Chat message types
 export interface ChatMessage {
   id: string;
-  role: 'user' | 'assistant';
+  role: 'user' | 'assistant' | 'system';
   content: string;
   timestamp: Date;
+  type?: 'voice' | 'tool-start' | 'tool-result' | 'tool-error' | 'status';
+  toolName?: string;
+  toolData?: any;
 }
 
 // MCP Tool types

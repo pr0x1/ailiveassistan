@@ -30,6 +30,33 @@ export const useGeminiLive = (): UseGeminiLiveReturn => {
   const lastInputTranscription = useRef<string>('');
   const lastOutputTranscription = useRef<string>('');
 
+  // ✅ NEW: Helper function to format tool results for display
+  const formatToolResult = useCallback((response: any, toolName: string): string => {
+    if (!response) return 'Sin datos';
+    
+    if (Array.isArray(response) && response.length === 0) {
+      return 'No se encontraron datos';
+    }
+    
+    if (Array.isArray(response) && response.length > 0) {
+      const firstItem = response[0];
+      if (toolName.includes('SalesOrder') && firstItem.SalesOrder) {
+        return `Orden #${firstItem.SalesOrder}, Monto: ${firstItem.TotalNetAmount || 'N/A'}`;
+      }
+      if (toolName.includes('Customer') && firstItem.Customer) {
+        return `Cliente: ${firstItem.CustomerName || firstItem.Customer}`;
+      }
+      return `${response.length} registro(s) encontrado(s)`;
+    }
+    
+    if (typeof response === 'object') {
+      const keys = Object.keys(response);
+      return `Datos: ${keys.slice(0, 3).join(', ')}${keys.length > 3 ? '...' : ''}`;
+    }
+    
+    return String(response).substring(0, 100);
+  }, []);
+
   // Use MCP client for tool execution
   const { availableTools, executeToolCall, isConnected: mcpConnected } = useMcpClient();
   
@@ -492,6 +519,17 @@ export const useGeminiLive = (): UseGeminiLiveReturn => {
                 for (const functionCall of e.toolCall.functionCalls) {
                   console.log(`[Gemini Live] Processing tool call: ${functionCall.name}`);
                   
+                  // ✅ NEW: Add system message for tool execution start
+                  const toolStartMessage: ChatMessage = {
+                    id: `tool-start-${Date.now()}`,
+                    role: 'system',
+                    content: `🔧 Ejecutando herramienta ${functionCall.name}...`,
+                    timestamp: new Date(),
+                    type: 'tool-start',
+                    toolName: functionCall.name
+                  };
+                  setMessages(prev => [...prev, toolStartMessage]);
+                  
                   try {
                     // Direct MCP call (simplified like MRE)
                     const mcpResponse = await executeToolCall(functionCall);
@@ -510,8 +548,31 @@ export const useGeminiLive = (): UseGeminiLiveReturn => {
                     console.log(`[Gemini Live] Tool ${functionCall.name} executed successfully`);
                     console.log(`[Gemini Live] MCP Response data:`, mcpResponse.response);
                     
+                    // ✅ NEW: Add system message for tool execution result
+                    const toolResultMessage: ChatMessage = {
+                      id: `tool-result-${Date.now()}`,
+                      role: 'system',
+                      content: `📊 Datos obtenidos de SAP: ${formatToolResult(mcpResponse.response, functionCall.name)}`,
+                      timestamp: new Date(),
+                      type: 'tool-result',
+                      toolName: functionCall.name,
+                      toolData: mcpResponse.response
+                    };
+                    setMessages(prev => [...prev, toolResultMessage]);
+                    
                   } catch (toolError: any) {
                     console.error(`[Gemini Live] Tool execution failed: ${functionCall.name}`, toolError);
+                    
+                    // ✅ NEW: Add system message for tool execution error
+                    const toolErrorMessage: ChatMessage = {
+                      id: `tool-error-${Date.now()}`,
+                      role: 'system',
+                      content: `❌ Error ejecutando ${functionCall.name}: ${toolError?.message || 'Error desconocido'}`,
+                      timestamp: new Date(),
+                      type: 'tool-error',
+                      toolName: functionCall.name
+                    };
+                    setMessages(prev => [...prev, toolErrorMessage]);
                     
                     // Simple error response (matching MRE pattern)
                     functionResponses.push({
