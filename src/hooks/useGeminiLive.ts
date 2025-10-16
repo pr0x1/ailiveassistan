@@ -394,72 +394,80 @@ export const useGeminiLive = (): UseGeminiLiveReturn => {
             if (e.serverContent) {
               console.log('[Gemini Live] Server content received');
               
-              // Handle input transcriptions (user speaking) - OFFICIAL GEMINI LIVE PATTERN
+              // Handle input transcriptions (user speaking) - PROGRESSIVE ACCUMULATION PATTERN
               if (e.serverContent.inputTranscription) {
                 console.log('[Gemini Live] Input transcription:', e.serverContent.inputTranscription.text);
                 
-                // ✅ OFFICIAL PATTERN: Update existing message instead of creating new ones
+                // ✅ FIXED PATTERN: Accumulate fragments progressively instead of overwriting
                 const transcriptionText = e.serverContent.inputTranscription.text;
                 
                 if (transcriptionText.trim().length > 0) {
                   setMessages(prev => {
                     const lastMessage = prev[prev.length - 1];
                     
-                    // If the last message is from user and is voice type, update it
+                    // If the last message is from user and is voice type, accumulate text
                     if (lastMessage && lastMessage.role === 'user' && lastMessage.type === 'voice') {
                       return prev.map((msg, index) => 
                         index === prev.length - 1 
-                          ? { ...msg, content: transcriptionText, timestamp: new Date() }
+                          ? { 
+                              ...msg, 
+                              content: msg.content + transcriptionText,  // ✅ ACCUMULATE fragments
+                              timestamp: new Date() 
+                            }
                           : msg
                       );
                     } else {
-                      // Create new message only if no voice message from user exists
+                      // Create new message with the first fragment
                       return [...prev, {
                         id: `input-${Date.now()}`,
                         role: 'user',
-                        content: transcriptionText,
+                        content: transcriptionText,  // ✅ First fragment
                         timestamp: new Date(),
                         type: 'voice'
                       }];
                     }
                   });
-                  console.log('[Gemini Live] Updated user transcription in real-time:', transcriptionText);
+                  console.log('[Gemini Live] Accumulated user transcription:', transcriptionText);
                 }
                 
                 setState('LISTENING');
               }
               
-              // Handle output transcriptions (Gemini speaking) - OFFICIAL GEMINI LIVE PATTERN
+              // Handle output transcriptions (Gemini speaking) - PROGRESSIVE ACCUMULATION PATTERN
               if (e.serverContent.outputTranscription) {
                 console.log('[Gemini Live] Output transcription:', e.serverContent.outputTranscription.text);
                 setState('SPEAKING');
                 
-                // ✅ OFFICIAL PATTERN: Update existing message instead of creating new ones
+                // ✅ FIXED PATTERN: Accumulate fragments progressively instead of overwriting
                 const transcriptionText = e.serverContent.outputTranscription.text;
                 
                 if (transcriptionText.trim().length > 0) {
                   setMessages(prev => {
                     const lastMessage = prev[prev.length - 1];
                     
-                    // If the last message is from assistant and is voice type, update it
+                    // If the last message is from assistant and is voice type, accumulate text
                     if (lastMessage && lastMessage.role === 'assistant' && lastMessage.type === 'voice') {
                       return prev.map((msg, index) => 
                         index === prev.length - 1 
-                          ? { ...msg, content: transcriptionText, timestamp: new Date() }
+                          ? { 
+                              ...msg, 
+                              content: msg.content + transcriptionText,  // ✅ ACCUMULATE fragments
+                              timestamp: new Date() 
+                            }
                           : msg
                       );
                     } else {
-                      // Create new message only if no voice message from assistant exists
+                      // Create new message with the first fragment
                       return [...prev, {
                         id: `output-${Date.now()}`,
                         role: 'assistant',
-                        content: transcriptionText,
+                        content: transcriptionText,  // ✅ First fragment
                         timestamp: new Date(),
                         type: 'voice'
                       }];
                     }
                   });
-                  console.log('[Gemini Live] Updated assistant transcription in real-time:', transcriptionText);
+                  console.log('[Gemini Live] Accumulated assistant transcription:', transcriptionText);
                 }
               }
 
