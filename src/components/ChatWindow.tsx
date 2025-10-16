@@ -38,13 +38,33 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({ messages }) => {
             <div
               key={message.id}
               className={`${styles.message} ${
-                message.role === 'user' ? styles.userMessage : styles.assistantMessage
+                message.role === 'user' 
+                  ? styles.userMessage 
+                  : message.role === 'system' 
+                    ? styles.systemMessage 
+                    : styles.assistantMessage
               }`}
             >
               <div className={styles.messageContent}>
-                <div className={styles.messageText}>{message.content}</div>
+                <div className={styles.messageText}>
+                  {message.content}
+                  {/* Show additional tool data for system messages */}
+                  {message.role === 'system' && message.type === 'tool-result' && message.toolData && (
+                    <div className={styles.toolData}>
+                      <details className={styles.toolDetails}>
+                        <summary>Ver datos completos</summary>
+                        <pre className={styles.toolDataContent}>
+                          {JSON.stringify(message.toolData, null, 2)}
+                        </pre>
+                      </details>
+                    </div>
+                  )}
+                </div>
                 <div className={styles.messageTime}>
                   {formatTime(message.timestamp)}
+                  {message.role === 'system' && message.toolName && (
+                    <span className={styles.toolName}> • {message.toolName}</span>
+                  )}
                 </div>
               </div>
             </div>
