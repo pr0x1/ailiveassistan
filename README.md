@@ -2002,12 +2002,19 @@ Based on MRE findings, the recommended approach is:
 ### ✅ Real-time Voice Transcription Streaming (COMPLETED)
 **Goal**: Fix voice transcriptions to show in real-time as users speak, following official Gemini Live API patterns
 
-**Status**: ✅ **FULLY IMPLEMENTED** - Real-time voice transcription now working correctly
+**Status**: ✅ **FULLY IMPLEMENTED** - Real-time voice transcription with progressive text accumulation
 
-**Problem Solved**: Missing transcription configuration in Gemini Live session setup
-**Root Cause**: `inputAudioTranscription` and `outputAudioTranscription` were not enabled in the session config
+**Problems Solved**: 
+1. **Missing transcription configuration** in Gemini Live session setup
+2. **Text overwriting instead of accumulation** - fragments were replacing instead of building up
 
-**Critical Fix Applied**:
+**Root Causes**: 
+1. `inputAudioTranscription` and `outputAudioTranscription` were not enabled in the session config
+2. Gemini Live API sends incremental fragments that need to be accumulated manually
+
+**Critical Fixes Applied**:
+
+#### **Fix 1: Enable Transcription Configuration**
 ```javascript
 // ✅ CRITICAL FIX: Enable transcription configuration
 const liveSession = await ai.current.live.connect({
@@ -2023,23 +2030,54 @@ const liveSession = await ai.current.live.connect({
 });
 ```
 
+#### **Fix 2: Progressive Fragment Accumulation**
+```javascript
+// ✅ CRITICAL FIX: Accumulate fragments progressively instead of overwriting
+if (lastMessage && lastMessage.role === 'user' && lastMessage.type === 'voice') {
+  return prev.map((msg, index) => 
+    index === prev.length - 1 
+      ? { 
+          ...msg, 
+          content: msg.content + transcriptionText,  // ✅ ACCUMULATE fragments
+          timestamp: new Date() 
+        }
+      : msg
+  );
+}
+```
+
+**Gemini Live API Behavior Confirmed**:
+```
+[Gemini Live] Output transcription: Hello, how
+[Gemini Live] Output transcription:  can        ← Note the leading space
+[Gemini Live] Output transcription:  I help     ← Note the leading space
+```
+
 **What Works Now**:
 - ✅ **Real-time user transcription** - See text build as you speak
 - ✅ **Real-time assistant transcription** - See AI responses build in real-time
-- ✅ **Progressive message updates** - Updates existing messages instead of creating new ones
+- ✅ **Progressive text accumulation** - "Hello, how" → "Hello, how can" → "Hello, how can I help"
+- ✅ **Fragment concatenation** - Properly handles incremental text fragments with spaces
 - ✅ **Official API compliance** - Follows Google's Gemini Live API documentation
 - ✅ **Complete tool integration** - Voice transcriptions work seamlessly with SAP tool execution
 
 **Current Experience**:
 ```
-[Usuario] "Muéstrame la orden..." (updates in real-time while speaking)
+[Usuario] "Hola" → "Hola como" → "Hola como estas" (progressive accumulation ✅)
 [Sistema] 🔧 Ejecutando herramienta getSalesOrderDetails...
 [Sistema] 📊 Datos obtenidos de SAP: Orden #229, Monto: $17,850
-[Asistente] "La orden de venta 229..." (updates in real-time while Gemini speaks)
+[Asistente] "Hello, how" → "Hello, how can" → "Hello, how can I help" (progressive accumulation ✅)
 ```
+
+**Technical Implementation**:
+- **Fragment Detection**: Detects when last message is voice type from same role
+- **Progressive Concatenation**: `msg.content + transcriptionText` accumulates fragments
+- **Timestamp Updates**: Updates message timestamp with each fragment
+- **Dual Implementation**: Same logic applied to both user and assistant transcriptions
 
 **Benefits Achieved**:
 - **Real-time feedback** - See transcription as you speak
+- **Progressive text building** - Natural accumulation of speech fragments
 - **Official API compliance** - Follows Google's documented patterns
 - **Better UX** - Natural conversation flow with live updates
 - **Educational transparency** - Complete visibility of voice + tool interactions
