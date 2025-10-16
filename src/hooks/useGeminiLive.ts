@@ -26,9 +26,8 @@ export const useGeminiLive = (): UseGeminiLiveReturn => {
   const [isConnected, setIsConnected] = useState(false);
   const [currentVoice, setCurrentVoice] = useState<VoiceOption>(DEFAULT_VOICE);
 
-  // ✅ FIX: Add message deduplication tracking
-  const lastInputTranscription = useRef<string>('');
-  const lastOutputTranscription = useRef<string>('');
+  // ✅ REMOVED: Strict deduplication - now allowing progressive transcription updates
+  // Based on official Gemini Live API documentation from Context7
 
   // ✅ NEW: Helper function to format tool results for display
   const formatToolResult = useCallback((response: any, toolName: string): string => {
@@ -331,10 +330,8 @@ export const useGeminiLive = (): UseGeminiLiveReturn => {
       setError(null);
       setState('IDLE');
 
-      // ✅ FIX: Reset transcription deduplication tracking for new conversation
-      lastInputTranscription.current = '';
-      lastOutputTranscription.current = '';
-      console.log('[Gemini Live] Reset transcription deduplication tracking');
+      // ✅ REMOVED: No more deduplication tracking - using progressive updates
+      console.log('[Gemini Live] Starting conversation with progressive transcription updates');
 
       console.log('[Gemini Live] Starting conversation...');
 
@@ -394,54 +391,72 @@ export const useGeminiLive = (): UseGeminiLiveReturn => {
             if (e.serverContent) {
               console.log('[Gemini Live] Server content received');
               
-              // Handle input transcriptions (user speaking)
+              // Handle input transcriptions (user speaking) - OFFICIAL GEMINI LIVE PATTERN
               if (e.serverContent.inputTranscription) {
                 console.log('[Gemini Live] Input transcription:', e.serverContent.inputTranscription.text);
                 
-                // ✅ FIX: Add user voice transcription to chat messages with deduplication
+                // ✅ OFFICIAL PATTERN: Update existing message instead of creating new ones
                 const transcriptionText = e.serverContent.inputTranscription.text;
                 
-                // Only add if different from last transcription (prevent duplicates)
-                if (transcriptionText !== lastInputTranscription.current && transcriptionText.trim().length > 0) {
-                  lastInputTranscription.current = transcriptionText;
-                  
-                  const userMessage: ChatMessage = {
-                    id: `input-${Date.now()}`,
-                    role: 'user',
-                    content: transcriptionText,
-                    timestamp: new Date()
-                  };
-                  setMessages(prev => [...prev, userMessage]);
-                  console.log('[Gemini Live] Added user transcription to chat:', transcriptionText);
-                } else {
-                  console.log('[Gemini Live] Skipped duplicate input transcription');
+                if (transcriptionText.trim().length > 0) {
+                  setMessages(prev => {
+                    const lastMessage = prev[prev.length - 1];
+                    
+                    // If the last message is from user and is voice type, update it
+                    if (lastMessage && lastMessage.role === 'user' && lastMessage.type === 'voice') {
+                      return prev.map((msg, index) => 
+                        index === prev.length - 1 
+                          ? { ...msg, content: transcriptionText, timestamp: new Date() }
+                          : msg
+                      );
+                    } else {
+                      // Create new message only if no voice message from user exists
+                      return [...prev, {
+                        id: `input-${Date.now()}`,
+                        role: 'user',
+                        content: transcriptionText,
+                        timestamp: new Date(),
+                        type: 'voice'
+                      }];
+                    }
+                  });
+                  console.log('[Gemini Live] Updated user transcription in real-time:', transcriptionText);
                 }
                 
                 setState('LISTENING');
               }
               
-              // Handle output transcriptions (Gemini speaking)
+              // Handle output transcriptions (Gemini speaking) - OFFICIAL GEMINI LIVE PATTERN
               if (e.serverContent.outputTranscription) {
                 console.log('[Gemini Live] Output transcription:', e.serverContent.outputTranscription.text);
                 setState('SPEAKING');
                 
-                // ✅ FIX: Add assistant transcription with deduplication
+                // ✅ OFFICIAL PATTERN: Update existing message instead of creating new ones
                 const transcriptionText = e.serverContent.outputTranscription.text;
                 
-                // Only add if different from last transcription (prevent duplicates)
-                if (transcriptionText !== lastOutputTranscription.current && transcriptionText.trim().length > 0) {
-                  lastOutputTranscription.current = transcriptionText;
-                  
-                  const assistantMessage: ChatMessage = {
-                    id: `output-${Date.now()}`,
-                    role: 'assistant',
-                    content: transcriptionText,
-                    timestamp: new Date()
-                  };
-                  setMessages(prev => [...prev, assistantMessage]);
-                  console.log('[Gemini Live] Added assistant transcription to chat:', transcriptionText);
-                } else {
-                  console.log('[Gemini Live] Skipped duplicate output transcription');
+                if (transcriptionText.trim().length > 0) {
+                  setMessages(prev => {
+                    const lastMessage = prev[prev.length - 1];
+                    
+                    // If the last message is from assistant and is voice type, update it
+                    if (lastMessage && lastMessage.role === 'assistant' && lastMessage.type === 'voice') {
+                      return prev.map((msg, index) => 
+                        index === prev.length - 1 
+                          ? { ...msg, content: transcriptionText, timestamp: new Date() }
+                          : msg
+                      );
+                    } else {
+                      // Create new message only if no voice message from assistant exists
+                      return [...prev, {
+                        id: `output-${Date.now()}`,
+                        role: 'assistant',
+                        content: transcriptionText,
+                        timestamp: new Date(),
+                        type: 'voice'
+                      }];
+                    }
+                  });
+                  console.log('[Gemini Live] Updated assistant transcription in real-time:', transcriptionText);
                 }
               }
 
