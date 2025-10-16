@@ -366,7 +366,10 @@ export const useGeminiLive = (): UseGeminiLiveReturn => {
               text: 'You are a Sales Assistant, you understand the OTC (Order-to-Cash) process in SAP, and you are capable of using the tools made available by the MCP server to execute the given requests. Do not try to invent answers if you do not have the information. When tool execution fails, explain the error clearly and suggest alternative approaches. Always maintain a helpful and professional tone in your audio responses.'
             }]
           },
-          tools: geminiTools
+          tools: geminiTools,
+          // ✅ CRITICAL FIX: Enable transcription configuration
+          inputAudioTranscription: {},   // Enable user voice transcription
+          outputAudioTranscription: {}   // Enable assistant voice transcription
         },
         callbacks: {
           onopen: () => {
