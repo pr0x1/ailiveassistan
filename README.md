@@ -116,7 +116,7 @@ ailiveassistan/
 3. **Configure environment variables**
    Create a `.env` file in the root directory:
    ```env
-   VITE_GEMINI_API_KEY=AIzaSyCIrRF4F654NwiptXCTbKxNP7IDDZobTQE
+   VITE_GEMINI_API_KEY=XXXXXXX
    VITE_MCP_SERVER_URL=https://cap-agent-flow.cfapps.us10-001.hana.ondemand.com
    ```
 
