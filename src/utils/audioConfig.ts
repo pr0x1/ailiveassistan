@@ -18,8 +18,8 @@ export const DEFAULT_VOICE: VoiceOption = 'Aoede';
 // Gemini Live model configuration
 export const GEMINI_LIVE_MODEL = 'gemini-2.5-flash-native-audio-preview-09-2025';
 
-// System instruction for SAP Sales Assistant
-export const SYSTEM_INSTRUCTION = `You are a Sales Assistant, you understand the OTC (Order-to-Cash) process in SAP, and you are capable of using the tools made available by the MCP server to execute the given requests. Do not try to invent answers if you do not have the information. When tool execution fails, explain the error clearly and suggest alternative approaches. Always maintain a helpful and professional tone in your audio responses.`;
+// ✅ REMOVED: System instruction moved to src/prompts/system-instruction.md
+// Use getValidatedSystemInstruction() from promptLoader.ts to load dynamically
 
 // Default audio configuration
 export const DEFAULT_AUDIO_CONFIG: AudioConfig = {

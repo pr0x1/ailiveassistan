@@ -11,6 +11,7 @@ import {
   DEFAULT_VOICE
 } from '../utils/audioConfig';
 import { convertMcpToolsToGemini } from '../utils/mcpToolConverter';
+import { getValidatedSystemInstruction } from '../utils/promptLoader';
 import { useMcpClient } from './useMcpClient';
 import { useAudioState } from './useAudioState';
 
@@ -356,6 +357,11 @@ export const useGeminiLive = (): UseGeminiLiveReturn => {
       // Connect to real Gemini Live API with proper configuration
       console.log('[Gemini Live] Connecting to Gemini Live API...');
       
+      // ✅ NEW: Load system instruction from markdown file
+      console.log('[Gemini Live] Loading system instruction from markdown file...');
+      const systemInstructionText = await getValidatedSystemInstruction();
+      console.log('[Gemini Live] System instruction loaded:', systemInstructionText.substring(0, 100) + '...');
+      
       const liveSession = await ai.current.live.connect({
        model: 'gemini-2.5-flash-native-audio-preview-09-2025',
        // model: 'gemini-live-2.5-flash-preview',
@@ -363,7 +369,7 @@ export const useGeminiLive = (): UseGeminiLiveReturn => {
           responseModalities: ["AUDIO" as any],
           systemInstruction: {
             parts: [{
-              text: 'You are a Sales Assistant, you understand the OTC (Order-to-Cash) process in SAP, and you are capable of using the tools made available by the MCP server to execute the given requests. Do not try to invent answers if you do not have the information. When tool execution fails, explain the error clearly and suggest alternative approaches. Always maintain a helpful and professional tone in your audio responses.'
+              text: systemInstructionText  // ✅ Now loaded dynamically from .md file
             }]
           },
           tools: geminiTools,
