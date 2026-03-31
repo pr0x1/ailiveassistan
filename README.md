@@ -207,7 +207,7 @@ export default defineConfig({
   server: {
     proxy: {
       '/api/mcp': {
-        target: 'https://your-sap-mcp-server.example.com',
+        target: process.env.VITE_MCP_SERVER_URL,  // loaded from .env
         changeOrigin: true,
         rewrite: (path) => path.replace(/^\/api\/mcp/, '/mcp'),
         secure: true,
