@@ -1,0 +1,258 @@
+.renderer {
+  padding: 1rem;
+  color: #333;
+}
+
+/* Layout */
+.column {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.row {
+  display: flex;
+  flex-direction: row;
+  gap: 0.5rem;
+  align-items: center;
+}
+
+/* Card */
+.card {
+  background: white;
+  border: 1px solid #e0e0e0;
+  border-radius: 8px;
+  padding: 1rem;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
+}
+
+/* Text */
+.h1 { font-size: 1.5rem; font-weight: 700; margin: 0 0 0.5rem 0; }
+.h2 { font-size: 1.25rem; font-weight: 600; margin: 0 0 0.4rem 0; }
+.h3 { font-size: 1.1rem; font-weight: 600; margin: 0 0 0.3rem 0; }
+.h4 { font-size: 1rem; font-weight: 500; margin: 0; }
+.h5 { font-size: 0.9rem; font-weight: 500; margin: 0; }
+.caption { font-size: 0.85rem; color: #666; margin: 0; }
+.body { font-size: 0.95rem; margin: 0; }
+.textDefault { font-size: 0.95rem; margin: 0; }
+
+/* List */
+.list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.listHorizontal {
+  flex-direction: row;
+}
+
+/* Button */
+.button {
+  padding: 0.5rem 1rem;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 0.9rem;
+  transition: opacity 0.2s;
+}
+
+.button:hover {
+  opacity: 0.85;
+}
+
+/* TextField */
+.textField {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.textFieldLabel {
+  font-size: 0.85rem;
+  color: #555;
+}
+
+.textFieldInput {
+  padding: 0.5rem;
+  border: 1px solid #ccc;
+  border-radius: 4px;
+  font-size: 0.9rem;
+}
+
+/* Divider */
+.divider {
+  border: none;
+  border-top: 1px solid #e0e0e0;
+  margin: 0.5rem 0;
+}
+
+.dividerVertical {
+  border-top: none;
+  border-left: 1px solid #e0e0e0;
+  height: 100%;
+  margin: 0 0.5rem;
+}
+
+/* CheckBox */
+.checkbox {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+/* Image */
+.image {
+  max-width: 100%;
+  border-radius: 4px;
+}
+
+/* DateTimeInput */
+.dateInput {
+  padding: 0.5rem;
+  border: 1px solid #ccc;
+  border-radius: 4px;
+  font-size: 0.9rem;
+}
+
+/* Icon */
+.icon {
+  font-size: 1.2rem;
+}
+
+/* Inline Code (Markdown) */
+.inlineCode {
+  background: #f0f0f0;
+  padding: 0.1em 0.3em;
+  border-radius: 3px;
+  font-family: 'Courier New', monospace;
+  font-size: 0.9em;
+}
+
+/* Tabs */
+.tabs {
+  display: flex;
+  flex-direction: column;
+}
+
+.tabBar {
+  display: flex;
+  gap: 0;
+  border-bottom: 2px solid #e0e0e0;
+}
+
+.tabButton {
+  padding: 0.5rem 1rem;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  font-size: 0.9rem;
+  color: #666;
+  border-bottom: 2px solid transparent;
+  margin-bottom: -2px;
+  transition: color 0.2s, border-color 0.2s;
+}
+
+.tabButton:hover {
+  color: #333;
+}
+
+.tabButtonActive {
+  color: #1565C0;
+  border-bottom-color: #1565C0;
+  font-weight: 500;
+}
+
+.tabContent {
+  padding: 0.75rem 0;
+}
+
+/* Modal */
+.modalOverlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.5);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+}
+
+.modalContent {
+  background: white;
+  border-radius: 8px;
+  padding: 1.5rem;
+  max-width: 90vw;
+  max-height: 85vh;
+  overflow-y: auto;
+  position: relative;
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.15);
+  color: #333;
+}
+
+.modalClose {
+  position: absolute;
+  top: 0.5rem;
+  right: 0.75rem;
+  background: none;
+  border: none;
+  font-size: 1.2rem;
+  cursor: pointer;
+  color: #666;
+  padding: 0.25rem;
+  line-height: 1;
+}
+
+.modalClose:hover {
+  color: #333;
+}
+
+/* MultipleChoice */
+.multipleChoice {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+
+.choiceOption {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.4rem 0.6rem;
+  border: 1px solid #e0e0e0;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 0.9rem;
+  transition: background 0.15s, border-color 0.15s;
+}
+
+.choiceOption:hover {
+  background: #f5f5f5;
+}
+
+.choiceOptionSelected {
+  background: #e3f2fd;
+  border-color: #1565C0;
+}
+
+/* Slider */
+.slider {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.sliderInput {
+  flex: 1;
+  cursor: pointer;
+}
+
+.sliderValue {
+  font-size: 0.9rem;
+  min-width: 2.5rem;
+  text-align: right;
+  color: #555;
+}

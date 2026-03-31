@@ -2,10 +2,19 @@ import { ChatWindow } from './components/ChatWindow';
 import { Controls } from './components/Controls';
 import { VoiceSelector } from './components/VoiceSelector';
 import { StatusIndicator } from './components/StatusIndicator';
+import { A2UIPanel } from './components/A2UIPanel';
 import { useGeminiLive } from './hooks/useGeminiLive';
+import { useA2UIAgent } from './hooks/useA2UIAgent';
 import styles from './styles/App.module.css';
 
 function App() {
+  const {
+    generateUI,
+    surfaces,
+    isGenerating,
+    error: a2uiError
+  } = useA2UIAgent();
+
   const {
     state,
     messages,
@@ -15,7 +24,11 @@ function App() {
     endConversation,
     sendMessage,
     setVoice
-  } = useGeminiLive();
+  } = useGeminiLive({
+    onToolResponse: (toolName, toolData) => {
+      generateUI(toolName, toolData);
+    }
+  });
 
   return (
     <div className={styles.app}>
@@ -30,18 +43,30 @@ function App() {
           <VoiceSelector onVoiceChange={setVoice} />
         </div>
 
-        <div className={styles.chatContainer}>
-          <ChatWindow messages={messages} />
-        </div>
+        <div className={styles.splitView}>
+          <div className={styles.chatPanel}>
+            <div className={styles.chatContainer}>
+              <ChatWindow messages={messages} />
+            </div>
 
-        <div className={styles.controlsContainer}>
-          <Controls
-            state={state}
-            isConnected={isConnected}
-            onStartConversation={startConversation}
-            onEndConversation={endConversation}
-            onSendMessage={sendMessage}
-          />
+            <div className={styles.controlsContainer}>
+              <Controls
+                state={state}
+                isConnected={isConnected}
+                onStartConversation={startConversation}
+                onEndConversation={endConversation}
+                onSendMessage={sendMessage}
+              />
+            </div>
+          </div>
+
+          <div className={styles.a2uiContainer}>
+            <A2UIPanel
+              surfaces={surfaces}
+              isGenerating={isGenerating}
+              error={a2uiError}
+            />
+          </div>
         </div>
 
         {error && (

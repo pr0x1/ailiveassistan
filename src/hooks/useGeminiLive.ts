@@ -19,7 +19,11 @@ import { useAudioState } from './useAudioState';
  * Custom hook for managing Gemini Live session with audio and tool integration
  * Now using AudioWorklet for proper PCM audio processing
  */
-export const useGeminiLive = (): UseGeminiLiveReturn => {
+export const useGeminiLive = (options?: { onToolResponse?: (toolName: string, toolData: unknown) => void }): UseGeminiLiveReturn => {
+  // Ref to always have the latest callback (avoids stale closure in WebSocket onmessage)
+  const onToolResponseRef = useRef(options?.onToolResponse);
+  onToolResponseRef.current = options?.onToolResponse;
+
   const isProcessingTool = useRef<boolean>(false);
   const [session, setSession] = useState<any | null>(null);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -627,6 +631,16 @@ export const useGeminiLive = (): UseGeminiLiveReturn => {
                 
                 await liveSession.sendToolResponse({ functionResponses });
                 console.log('[Gemini Live] Tool responses sent successfully to API');
+
+                // Fire A2UI generation for each successful tool response (non-blocking)
+                if (onToolResponseRef.current) {
+                  for (const fr of functionResponses) {
+                    if (fr.response?.result && !String(fr.response.result).startsWith('Tool execution failed')) {
+                      console.log(`[Gemini Live] Firing onToolResponse for ${fr.name}`);
+                      onToolResponseRef.current(fr.name, fr.response.result);
+                    }
+                  }
+                }
                 
               } catch (error) {
                 console.error('[Gemini Live] Failed to process tool calls:', error);
